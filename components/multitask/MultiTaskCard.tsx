@@ -46,6 +46,7 @@ export interface MultiTaskCardRunState {
 
 export interface MultiTaskCardData {
   id: string;
+  name?: string;
   webappId: string;
   webAppInfo: WebAppInfo | null;
   nodes: NodeInfo[];
@@ -65,6 +66,9 @@ interface MultiTaskCardProps {
   card: MultiTaskCardData;
   apiKeys: string[];
   editorRef: React.Ref<StepEditorRef>;
+  onSnapshotChange?: () => void;
+  onNameChange: (name: string) => void;
+  detailView?: boolean;
   isBusy: boolean;
   onRunOptionsChange: (cardId: string, options: WorkflowRunOptions) => void;
   onWebappIdChange: (cardId: string, value: string) => void;
@@ -196,6 +200,9 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   onRun,
   onCancel,
   onInstanceTypeChange,
+  onSnapshotChange,
+  detailView,
+  onNameChange,
 }) => {
   const [inputValue, setInputValue] = useState(card.webappId);
   const [activeOutputIndex, setActiveOutputIndex] = useState(0);
@@ -256,8 +263,8 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   };
 
   return (
-    <div className="relative flex h-[calc(100vh-120px)] min-h-[600px] max-h-[900px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-[#161920]">
-      <div className="border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/30">
+    <div className={`relative flex min-h-[600px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-[#161920] ${detailView ? 'h-full xl:grid xl:grid-cols-[minmax(0,1fr)_340px] xl:grid-rows-[auto_minmax(0,1fr)]' : 'h-[calc(100vh-120px)] max-h-[900px]'}`}>
+      <div className="xl:col-span-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/30">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -289,6 +296,9 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
           </div>
         </div>
 
+        <input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
+          disabled={isBusy} onChange={event => onNameChange(event.target.value)}
+          className="mt-3 w-full rounded-lg border border-slate-200 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
         <div className="mt-3 flex gap-2">
           <input
             type="text"
@@ -359,6 +369,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
 
       <div className="relative flex-1 min-h-0">
         <StepEditor
+          onSnapshotChange={onSnapshotChange}
           key={card.editorRevision}
           initialPendingFiles={card.initialPendingFiles}
           ref={editorRef}
@@ -378,7 +389,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
         />
       </div>
 
-      <div className="border-t border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-[#161920]">
+      <div className="min-h-0 overflow-y-auto border-t border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-[#161920]">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             {card.run.status === 'success' ? (

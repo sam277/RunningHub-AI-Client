@@ -72,3 +72,5 @@ rh.png
 # OS files
 Thumbs.db
 Desktop.ini
+.npm-cache/
+.browser-test-output/

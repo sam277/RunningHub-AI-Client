@@ -886,6 +886,7 @@ export const getOfficialAppList = async (
   size: number = 50,
   sort: string = 'RECOMMEND',
   search?: string,
+  carefullyChosen: boolean = false,
 ): Promise<{
   records: AppListItem[];
   total: number;
@@ -894,7 +895,7 @@ export const getOfficialAppList = async (
   const body: JsonRecord = {
     current: page,
     size,
-    carefullyChosen: true,
+    ...(carefullyChosen ? { carefullyChosen: true } : {}),
     sort,
   };
 

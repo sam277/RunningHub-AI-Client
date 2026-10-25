@@ -24,6 +24,7 @@ interface StepEditorProps {
     initialPendingFiles?: PendingFilesMap;
     mode?: 'app' | 'standard';
     standardModelConfig?: StandardModelConfig;
+    onSnapshotChange?: () => void;
 }
 
 export interface StepEditorSnapshot {
@@ -84,7 +85,7 @@ const hasSameNodeStructure = (left: NodeInfo[], right: NodeInfo[]) => {
     });
 };
 
-const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig }, ref) => {
+const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange }, ref) => {
     const editorDomId = useId().replace(/:/g, '-');
     const [localNodes, setLocalNodes] = useState<NodeInfo[]>(() => nodes.map(node => ({ ...node })));
     const uploadRequestsRef = useRef(new Map<string, symbol>());
@@ -114,6 +115,11 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
     const nodesTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const primaryApiKey = apiKeys[0] || '';
     const hasUploadingFiles = Object.values(uploadingState).some(Boolean);
+    const snapshotChangeRef = useRef(onSnapshotChange);
+    snapshotChangeRef.current = onSnapshotChange;
+    useEffect(() => {
+        snapshotChangeRef.current?.();
+    }, [localNodes, batchList, pendingFiles, batchTaskName, instanceType, hasUploadingFiles, isConnected]);
     const standardModelEndpoint = standardModelConfig?.endpoint?.trim() || '';
     const modelPricePreviewPayload = useMemo(
         () => mode === 'standard' ? buildStandardModelPayload(localNodes) : {},

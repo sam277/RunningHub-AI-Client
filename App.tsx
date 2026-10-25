@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
-import { Home, Briefcase, Settings, User, Layers, Languages } from 'lucide-react';
+import { Home, Settings, User, Layers, Languages } from 'lucide-react';
 import type { StepRunningRef } from './components/StepRunning';
 import type { MultiTaskAppRequest } from './components/MultiTaskView';
 import SettingsModal from './components/SettingsModal';
@@ -47,6 +47,7 @@ const normalizeApiKeyEntry = (entry?: Partial<ApiKeyEntry> | null): ApiKeyEntry 
   return {
     id: entry?.id || crypto.randomUUID(),
     apiKey: typeof entry?.apiKey === 'string' ? entry.apiKey : '',
+    note: typeof entry?.note === 'string' ? entry.note : '',
     concurrency: Number.isFinite(normalizedConcurrency) && normalizedConcurrency > 0
       ? Math.floor(normalizedConcurrency)
       : 1,
@@ -67,7 +68,7 @@ const normalizeApiKeys = (entries?: Partial<ApiKeyEntry>[] | null): ApiKeyEntry[
 };
 
 const normalizeStartupView = (value?: string | null): StartupView => {
-  if (value === 'workspace' || value === 'multitask') {
+  if (value === 'multitask') {
     return value;
   }
 
@@ -75,11 +76,11 @@ const normalizeStartupView = (value?: string | null): StartupView => {
 };
 
 const normalizeHomeDefaultTab = (value?: string | null): HomeDefaultTab => {
-  if (value === 'official' || value === 'support') {
+  if (value === 'official' || value === 'favorites') {
     return value;
   }
 
-  return 'support';
+  return 'favorites';
 };
 
 const viewLoadingFallback = (
@@ -102,7 +103,7 @@ function App() {
     try {
       return normalizeHomeDefaultTab(localStorage.getItem(STORAGE_KEY_HOME_DEFAULT_TAB));
     } catch {
-      return 'support';
+      return 'favorites';
     }
   });
   const [currentView, setCurrentView] = useState<AppView>(() => {
@@ -123,7 +124,7 @@ function App() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_API_KEYS);
       const parsed = saved ? JSON.parse(saved) : [];
-      return normalizeApiKeys(parsed);
+      return normalizeApiKeys(parsed).map(entry => ({ ...entry, loading: false, error: undefined }));
     } catch { return [createEmptyApiKeyEntry()]; }
   });
   const [enterpriseApi, setEnterpriseApi] = useState<ApiKeyEntry>(() => {
@@ -167,7 +168,7 @@ function App() {
     setApiKeys(normalizedKeys);
 
     if (localStorage.getItem(STORAGE_KEY_API_KEYS)) {
-      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys));
+      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
     }
   }, []);
 
@@ -365,7 +366,7 @@ function App() {
     const normalizedKeys = normalizeApiKeys(newKeys);
     setApiKeys(normalizedKeys);
     if (saveToStorage) {
-      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys));
+      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
     } else {
       // 如果不保存，则清除 localStorage 中已保存的 API Keys
       localStorage.removeItem(STORAGE_KEY_API_KEYS);
@@ -457,7 +458,6 @@ function App() {
 
   const tabs: { id: AppView; label: string; icon: React.FC<any> }[] = [
     { id: 'home', label: text('首页', 'Home'), icon: Home },
-    { id: 'workspace', label: text('标准模型 API', 'Model API'), icon: Briefcase },
     { id: 'multitask', label: text('多任务模式', 'Multi-task'), icon: Layers },
     { id: 'tools', label: text('设置', 'Settings'), icon: Settings },
   ];
@@ -468,7 +468,7 @@ function App() {
       <header className="bg-white dark:bg-[#0F1115] border-b border-slate-200 dark:border-slate-800/50 h-14 flex items-center justify-between pr-4 shrink-0 z-20 shadow-sm">
         <div className="flex items-center h-full gap-3">
           <img src="/r.png" alt="RunningHub" className="h-10 w-auto ml-2" />
-          <span className="text-xl font-bold text-slate-800 dark:text-white tracking-wide">{text('RH客户端( H 版 ) v1.6.7', 'RH Client (H Edition) v1.6.7')}</span>
+          <span className="text-xl font-bold text-slate-800 dark:text-white tracking-wide">{text('RH个人工作台 v1.6.7', 'RH Personal Workspace v1.6.7')}</span>
           <button
             onClick={handleOpenAbout}
             className="ml-2 px-2 py-0.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-full transition-colors"
@@ -532,6 +532,8 @@ function App() {
               <HomeView
                 onSelectApp={handleSelectApp}
                 favorites={favorites}
+                apiKeys={apiKeysList}
+                onUpdateFavorites={handleUpdateFavorites}
                 onToggleFavorite={handleToggleFavorite}
                 defaultTab={homeDefaultTab}
                 resetToken={homeViewResetToken}

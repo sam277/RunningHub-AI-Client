@@ -36,7 +36,7 @@ const dispatchRegionChange = () => {
 
 export const getRunningHubRegionMode = (): RunningHubRegionMode => {
   const value = readStorage(RUNNING_HUB_REGION_MODE_STORAGE_KEY);
-  return value === 'cn' || value === 'global' ? value : 'auto';
+  return value === 'cn' || value === 'global' || value === 'auto' ? value : 'global';
 };
 
 export const setRunningHubRegionMode = (mode: RunningHubRegionMode) => {

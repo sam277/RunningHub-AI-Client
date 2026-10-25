@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import { Globe, RefreshCw, Heart, MousePointerClick, Star, Play, Loader2, User, Search, X, Github, ExternalLink, Gift, Users, Coffee } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import FavoritesView from './FavoritesView';
+import { Globe, RefreshCw, Heart, MousePointerClick, Star, Play, Loader2, User, Search, X } from 'lucide-react';
 import { NodeInfo, WebAppInfo, Favorite, HomeDefaultTab } from '../types';
 import { getOfficialAppList, AppListItem } from '../services/api';
 import {
@@ -12,18 +12,28 @@ import {
 interface HomeViewProps {
     onSelectApp: (appId: string, preloadedData?: { nodes: NodeInfo[], appInfo: WebAppInfo }) => void;
     favorites: Favorite[];
+    apiKeys: string[];
+    onUpdateFavorites: (favorites: Favorite[]) => void;
     onToggleFavorite: (app: Favorite) => void;
     defaultTab: HomeDefaultTab;
     resetToken: number;
 }
 
-const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFavorite, defaultTab, resetToken }) => {
+const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, apiKeys, onUpdateFavorites, onToggleFavorite, defaultTab, resetToken }) => {
     const [activeTab, setActiveTab] = useState<HomeDefaultTab>(defaultTab);
+
+    const [directAppInput, setDirectAppInput] = useState('');
+    const [curatedOnly, setCuratedOnly] = useState(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const requestVersion = useRef(0);
+    const submittedKeyword = useRef('');
+    const openDirectApp = () => {
+        if (directAppInput.trim()) onSelectApp(directAppInput.trim());
+    };
 
     // Official apps state
     const [officialApps, setOfficialApps] = useState<AppListItem[]>([]);
     const [isLoadingOfficial, setIsLoadingOfficial] = useState(false);
-    const [hasLoadedOfficial, setHasLoadedOfficial] = useState(false);
 
     const [sortOrder, setSortOrder] = useState<string>('RECOMMEND');
     const [searchKeyword, setSearchKeyword] = useState('');
@@ -44,7 +54,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
         if (activeTab === 'official') {
             loadOfficialApps(true);
         }
-    }, [activeTab, sortOrder, regionRevision]);
+    }, [activeTab, sortOrder, regionRevision, curatedOnly]);
 
 
     useEffect(() => {
@@ -52,12 +62,17 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
     }, [defaultTab, resetToken]);
 
     const loadOfficialApps = async (reset = false, keywordOverride?: string, forceRefresh = false) => {
+        const version = reset ? ++requestVersion.current : requestVersion.current;
+        const region = getPreferredRunningHubRegion();
         const pageToLoad = reset ? 1 : currentPage + 1;
-        const currentKeyword = keywordOverride !== undefined ? keywordOverride : searchKeyword;
+        const currentKeyword = keywordOverride !== undefined ? keywordOverride : (reset ? searchKeyword : submittedKeyword.current);
+        if (reset) submittedKeyword.current = currentKeyword;
+        setLoadError(null);
         const isDefaultFetch = reset && currentKeyword === '' && sortOrder === 'RECOMMEND';
 
         if (reset) {
             setIsLoadingOfficial(true);
+            setIsLoadingMore(false);
         } else {
             setIsLoadingMore(true);
         }
@@ -65,7 +80,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
         try {
             if (isDefaultFetch && !forceRefresh && localStorage.getItem('rh_refresh_store_startup') === 'false') {
                 try {
-                    const cacheKey = `rh_official_apps_cache_${getPreferredRunningHubRegion()}`;
+                    const cacheKey = `rh_official_apps_cache_v2_${region}_${curatedOnly ? 'curated' : 'all'}`;
                     const cached = localStorage.getItem(cacheKey);
                     if (cached) {
                         const parsedCache = JSON.parse(cached);
@@ -73,7 +88,6 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
                             setOfficialApps(parsedCache.records);
                             setCurrentPage(1);
                             setTotalApps(parsedCache.total);
-                            setHasLoadedOfficial(true);
                             setIsLoadingOfficial(false);
                             return;
                         }
@@ -81,25 +95,26 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
                 } catch (e) {}
             }
 
-            const res = await getOfficialAppList(pageToLoad, 50, sortOrder, currentKeyword);
+            const res = await getOfficialAppList(pageToLoad, 50, sortOrder, currentKeyword, curatedOnly);
+            if (version !== requestVersion.current) return;
 
             if (reset) {
                 setOfficialApps(res.records);
                 setCurrentPage(1);
                 if (isDefaultFetch) {
-                    const cacheKey = `rh_official_apps_cache_${getPreferredRunningHubRegion()}`;
+                    const cacheKey = `rh_official_apps_cache_v2_${region}_${curatedOnly ? 'curated' : 'all'}`;
                     localStorage.setItem(cacheKey, JSON.stringify({ records: res.records, total: res.total }));
                 }
             } else {
-                setOfficialApps(prev => [...prev, ...res.records]);
+                setOfficialApps(prev => [...new Map([...prev, ...res.records].map(app => [app.id, app])).values()]);
                 setCurrentPage(pageToLoad);
             }
 
             setTotalApps(res.total);
-            setHasLoadedOfficial(true);
         } catch (e) {
-            console.error("Failed to load official apps", e);
+            if (version === requestVersion.current) setLoadError(e instanceof Error ? e.message : "应用列表加载失败，请重试");
         } finally {
+            if (version !== requestVersion.current) return;
             if (reset) {
                 setIsLoadingOfficial(false);
             } else {
@@ -110,8 +125,25 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
 
     return (
         <div className="flex-1 flex flex-col bg-slate-50 dark:bg-[#0F1115] overflow-auto p-6">
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-[#161920]">
+                <span className="text-sm font-medium">通过 ID / 链接打开应用</span>
+                <input value={directAppInput} onChange={event => setDirectAppInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') openDirectApp(); }}
+                    aria-label="应用 ID 或链接" placeholder="粘贴 RunningHub 应用 ID 或详情页链接"
+                    className="min-w-48 flex-1 rounded-lg border border-slate-200 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <button onClick={openDirectApp} disabled={!directAppInput.trim()} className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white disabled:opacity-50">添加到多任务</button>
+            </div>
+            {loadError && activeTab === 'official' && <div role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">{loadError}</div>}
             <div className="flex items-center justify-between mb-6 border-b border-slate-200 dark:border-slate-800 pb-2 shrink-0">
                 <div className="flex gap-6">
+                    <button
+                        onClick={() => setActiveTab('favorites')}
+                        className={`pb-2 text-sm font-semibold transition-colors border-b-2 -mb-2.5 px-1 ${activeTab === 'favorites'
+                            ? 'text-brand-600 dark:text-brand-400 border-brand-600 dark:border-brand-400'
+                            : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
+                            }`}
+                    >
+                        我的收藏
+                    </button>
                     <button
                         onClick={() => setActiveTab('official')}
                         className={`pb-2 text-sm font-semibold transition-colors border-b-2 -mb-2.5 px-1 ${activeTab === 'official'
@@ -120,15 +152,6 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
                             }`}
                     >
                         官方应用商城
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('support')}
-                        className={`pb-2 text-sm font-semibold transition-colors border-b-2 -mb-2.5 px-1 ${activeTab === 'support'
-                            ? 'text-brand-600 dark:text-brand-400 border-brand-600 dark:border-brand-400'
-                            : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
-                            }`}
-                    >
-                        交流与支持
                     </button>
                 </div>
 
@@ -166,6 +189,10 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
                             >
                                 <RefreshCw className="w-4 h-4" />
                             </button>
+                            <select aria-label="应用范围" value={curatedOnly ? 'curated' : 'all'} onChange={event => setCuratedOnly(event.target.value === 'curated')}
+                                className="rounded-lg border border-slate-200 bg-transparent px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-[#1a1d24]">
+                                <option value="all">全部公开应用</option><option value="curated">精选应用</option>
+                            </select>
                             <select
                                 value={sortOrder}
                                 onChange={(e) => setSortOrder(e.target.value)}
@@ -182,6 +209,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
             </div>
 
             <div className="flex-1 min-h-0">
+                {activeTab === 'official' && <p className="mb-4 text-xs text-slate-500">当前站点：{getPreferredRunningHubRegion() === 'global' ? '国际站 runninghub.ai' : '国内站 runninghub.cn'} · 已加载 {officialApps.length} / {totalApps} 个应用。列表以站点接口返回为准；未找到时可直接输入 ID 或链接。</p>}
                 {activeTab === 'official' ? (
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4 pb-10">
                         {isLoadingOfficial ? (
@@ -327,157 +355,10 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, onToggleFav
                             </>
                         )}
                     </div>
-                ) : activeTab === 'support' ? (
-                    <div className="max-w-7xl mx-auto py-1 px-4 h-full overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
-
-                        
-                        <div className="flex flex-col lg:flex-row gap-6 items-start">
-                            {/* Left Column: Donation (Enlarged) */}
-                            <div className="w-full lg:w-[440px] shrink-0 order-1 lg:order-1">
-                                <div className="relative overflow-hidden rounded-[2rem] bg-white dark:bg-[#1a1d24] border-2 border-slate-100 dark:border-slate-800 p-8 shadow-xl hover:shadow-2xl transition-all duration-500 group border-amber-100 dark:border-amber-900/20">
-                                    <div className="absolute top-0 right-0 w-48 h-48 bg-amber-500/5 rounded-full blur-3xl -mr-10 -mt-10 group-hover:bg-amber-500/10 transition-colors" />
-                                    
-                                    <div className="relative z-10 flex flex-col gap-6">
-                                        <div className="flex items-center gap-3">
-                                            <div className="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-2xl text-amber-500">
-                                                <Coffee className="w-6 h-6 animate-bounce" />
-                                            </div>
-                                            <div>
-                                                <h3 className="text-xl font-black text-slate-900 dark:text-white">赞助项目发展</h3>
-                                                <p className="text-xs text-slate-500 dark:text-slate-400">您的支持是持续维护的动力</p>
-                                            </div>
-                                        </div>
-
-                                        <div className="flex flex-col items-center gap-6 py-4 px-2">
-                                            <div className="shrink-0 relative">
-                                                <div className="absolute -inset-2 bg-gradient-to-r from-amber-200 to-orange-400 dark:from-amber-900 dark:to-orange-900 rounded-[1.5rem] blur opacity-40 group-hover:opacity-70 transition-opacity duration-700" />
-                                                <img 
-                                                    src="/kafei.jpg" 
-                                                    alt="Donate QR" 
-                                                    className="relative w-48 h-48 object-cover rounded-[1.2rem] shadow-lg border-4 border-white dark:border-[#252830] transform group-hover:scale-105 transition-transform duration-500" 
-                                                />
-                                            </div>
-                                            
-                                            <div className="space-y-4 text-center">
-                                                <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed font-medium px-4">
-                                                    RH客户端 的开发与维护需要大量的精力，如果您觉得本工具对您有所帮助，欢迎赞助作者喝杯咖啡。支持是持续维护的动力。
-                                                </p>
-                                            </div>
-                                        </div>
-                                        
-                                        <div className="mt-2 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 italic text-center">
-                                            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                                                "开源精神薪火相传，每一份支持都是前进的力量。"
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Right Column: Other Modules Grid */}
-                            <div className="flex-1 w-full order-2 lg:order-2">
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    
-                                    {/* Phantom AI */}
-                                    <a
-                                        href="https://phantomai.top/"
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="group md:col-span-2 relative overflow-hidden rounded-2xl bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 p-5 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-300"
-                                    >
-                                        <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-3xl group-hover:bg-blue-500/10 transition-colors" />
-                                        <div className="relative z-10 flex items-center gap-4">
-                                            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl text-blue-600 dark:text-blue-400">
-                                                <Globe className="w-6 h-6" />
-                                            </div>
-                                            <div className="flex-1">
-                                                <h3 className="text-base font-bold text-slate-800 dark:text-white mb-1 group-hover:text-blue-500 transition-colors">幻影AI 项目中心</h3>
-                                                <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight mb-3">关注开源生态及项目动态，探索 AI 精彩世界。</p>
-                                                <div className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-3 py-1.5 rounded-full group-hover:bg-blue-100 dark:group-hover:bg-blue-900/50 transition-colors">
-                                                    <span>立即前往</span>
-                                                    <ExternalLink className="w-3 h-3" />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </a>
-
-                                    {/* Github */}
-                                    <a
-                                        href="https://github.com/colorAi/RunningHub-AI-Client"
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="group relative overflow-hidden rounded-2xl bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 p-5 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-300"
-                                    >
-                                        <div className="relative z-10 flex flex-col h-full">
-                                            <div className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl text-slate-700 dark:text-slate-300 w-max mb-4">
-                                                <Github className="w-6 h-6" />
-                                            </div>
-                                            <h3 className="text-base font-bold text-slate-800 dark:text-white mb-1 group-hover:text-slate-600 dark:group-hover:text-slate-300 transition-colors">GitHub 仓库</h3>
-                                            <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight">欢迎提交 PR 或 Issue，贡献代码与建议。</p>
-                                        </div>
-                                    </a>
-
-                                    {/* Bilibili */}
-                                    <a
-                                        href="https://space.bilibili.com/527601196?spm_id_from=333.40164.0.0"
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="group relative overflow-hidden rounded-2xl bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 p-5 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-300"
-                                    >
-                                        <div className="relative z-10 flex flex-col h-full items-center text-center">
-                                            <div className="p-3 bg-pink-50 dark:bg-pink-900/20 rounded-full text-pink-500 mb-4 group-hover:scale-110 transition-transform">
-                                                <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-                                                    <path d="M17.813 4.653h.854c1.51.054 2.769.578 3.773 1.574 1.004.995 1.524 2.249 1.56 3.76v7.36c-.036 1.51-.556 2.769-1.56 3.773s-2.262 1.524-3.773 1.56H5.333c-1.51-.036-2.769-.556-3.773-1.56S.036 18.87.001 17.36V10.03c-.014-1.523.492-2.771 1.518-3.746.955-.907 2.185-1.42 3.69-1.537l-.023-.021L3.99 3.09 5.8 1.28l3.181 3.182h6.038l3.182-3.182 1.81 1.81-1.198 1.563ZM5.333 6.36c-1.005.035-1.842.38-2.51.035 0 0-.256.126-.464.334-.23.23-.377.533-.442.909L1.91 7.64v9.72c.046 1.054.405 1.91 1.077 2.566.671.657 1.545 1.002 2.622 1.034h12.783c1.076-.032 1.95-.377 2.622-1.034.671-.657 1.03-1.512 1.077-2.566V7.64c-.056-1.085-.415-1.954-1.077-2.607-.662-.653-1.526-1.002-2.593-1.046l-.029.012H5.333Zm3.583 3.667h2.5v2.5h-2.5v-2.5Zm6 0h2.5v2.5h-2.5v-2.5Z" />
-                                                </svg>
-                                            </div>
-                                            <h3 className="text-base font-bold text-slate-800 dark:text-white mb-1">哔哩哔哩</h3>
-                                            <p className="text-xs text-slate-500 dark:text-slate-400">@HooTooH 开发日记</p>
-                                        </div>
-                                    </a>
-
-                                    {/* Register & Gift */}
-                                    <a
-                                        href={`${getRunningHubHost(getPreferredRunningHubRegion())}/?inviteCode=rh-v1123`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-brand-500 p-5 shadow-md hover:shadow-lg hover:-translate-y-1 transition-all duration-300"
-                                    >
-                                        <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl group-hover:scale-125 transition-transform duration-700" />
-                                        <div className="relative z-10 flex flex-col h-full text-white">
-                                            <div className="flex items-center justify-between mb-4">
-                                                <div className="p-2.5 bg-white/20 backdrop-blur-md rounded-xl">
-                                                    <Gift className="w-6 h-6" />
-                                                </div>
-                                                <span className="px-3 py-1 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-black leading-none uppercase tracking-widest">Gift</span>
-                                            </div>
-                                            <h3 className="text-base font-bold mb-1">1000 RH 币礼包</h3>
-                                            <p className="text-xs text-white/80 mb-4 flex-1">邀请码 <strong className="font-mono bg-black/20 px-1.5 py-0.5 rounded ml-1">rh-v1123</strong></p>
-                                            <div className="flex items-center gap-2 text-[10px] font-black bg-white text-brand-600 w-max px-5 py-2 rounded-full shadow-lg">
-                                                <span>立即体验</span>
-                                                <ExternalLink className="w-3 h-3" />
-                                            </div>
-                                        </div>
-                                    </a>
-
-                                    {/* QQ Group */}
-                                    <div className="group relative overflow-hidden rounded-2xl bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 p-5 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-300 flex flex-col justify-center text-center">
-                                        <div className="absolute inset-0 bg-slate-50 dark:bg-slate-800/30 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                        <div className="relative z-10 flex flex-col items-center">
-                                            <div className="p-3.5 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-600 dark:text-slate-400 mb-3 group-hover:text-brand-500 dark:group-hover:text-brand-400 transition-colors">
-                                                <Users className="w-7 h-7" />
-                                            </div>
-                                            <h3 className="text-base font-bold text-slate-800 dark:text-white mb-1">日常交流答疑</h3>
-                                            <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5">欢迎加入微信/QQ交流</p>
-                                            <div className="text-lg font-mono font-black text-brand-600 dark:text-brand-400 select-all border-2 border-dashed border-brand-200 dark:border-brand-900/50 bg-brand-50/50 dark:bg-brand-900/10 px-4 py-1.5 rounded-xl w-max mx-auto shadow-sm">
-                                                543917943
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                ) : null}
+                ) : (
+                    <FavoritesView favorites={favorites} apiKeys={apiKeys} onUpdateFavorites={onUpdateFavorites}
+                        onSelectApp={fav => onSelectApp(fav.webappId, fav.appInfo && fav.nodes?.length ? { nodes: fav.nodes, appInfo: fav.appInfo } : undefined)} />
+                )}
             </div>
         </div>
     );

@@ -128,6 +128,7 @@ export interface WorkflowRunOptions {
 export interface ApiKeyEntry {
   id: string;
   apiKey: string;
+  note?: string;
   concurrency?: number;
   accountInfo?: AccountInfo | null;
   apiInfo?: ApiInfo | null;
@@ -183,7 +184,7 @@ export interface AutoSaveConfig {
   directoryPath?: string | null;
 }
 
-export type HomeDefaultTab = 'official' | 'support';
+export type HomeDefaultTab = 'official' | 'favorites';
 
 export interface WebAppInfo {
   webappName: string;
