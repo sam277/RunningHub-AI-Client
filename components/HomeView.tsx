@@ -1,3 +1,4 @@
+import { settingsStorage } from '../services/localPersistence';
 import React, { useState, useEffect, useRef } from 'react';
 import AppLibraryEditor from './AppLibraryEditor';
 import FavoritesView from './FavoritesView';
@@ -80,10 +81,10 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, apiKeys, on
         }
 
         try {
-            if (isDefaultFetch && !forceRefresh && localStorage.getItem('rh_refresh_store_startup') === 'false') {
+            if (isDefaultFetch && !forceRefresh && settingsStorage.getItem('rh_refresh_store_startup') === 'false') {
                 try {
                     const cacheKey = `rh_official_apps_cache_v2_${region}_${curatedOnly ? 'curated' : 'all'}`;
-                    const cached = localStorage.getItem(cacheKey);
+                    const cached = settingsStorage.getItem(cacheKey);
                     if (cached) {
                         const parsedCache = JSON.parse(cached);
                         if (parsedCache?.records?.length > 0) {
@@ -105,7 +106,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, apiKeys, on
                 setCurrentPage(1);
                 if (isDefaultFetch) {
                     const cacheKey = `rh_official_apps_cache_v2_${region}_${curatedOnly ? 'curated' : 'all'}`;
-                    localStorage.setItem(cacheKey, JSON.stringify({ records: res.records, total: res.total }));
+                    settingsStorage.setItem(cacheKey, JSON.stringify({ records: res.records, total: res.total }));
                 }
             } else {
                 setOfficialApps(prev => [...new Map([...prev, ...res.records].map(app => [app.id, app])).values()]);

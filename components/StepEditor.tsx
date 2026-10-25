@@ -1,3 +1,4 @@
+import { settingsStorage } from '../services/localPersistence';
 import React, { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { NodeInfo, WebAppInfo, InstanceType, PendingFilesMap, RunningHubModelPricePreview, StandardModelConfig } from '../types';
 import { getSwitchFieldConfig, parseListOptions } from '../utils/nodeUtils';
@@ -26,6 +27,7 @@ interface StepEditorProps {
     standardModelConfig?: StandardModelConfig;
     runLabel?: string;
     onSnapshotChange?: () => void;
+    productionLayout?: boolean;
 }
 
 export interface StepEditorSnapshot {
@@ -86,8 +88,9 @@ const hasSameNodeStructure = (left: NodeInfo[], right: NodeInfo[]) => {
     });
 };
 
-const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange, runLabel }, ref) => {
+const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange, runLabel, productionLayout = false }, ref) => {
     const editorDomId = useId().replace(/:/g, '-');
+    const [mediaWidth,setMediaWidth]=useState(()=>Math.max(30,Math.min(65,Number(settingsStorage.getItem('rh_editor_media_width'))||45)));
     const [localNodes, setLocalNodes] = useState<NodeInfo[]>(() => nodes.map(node => ({ ...node })));
     const uploadRequestsRef = useRef(new Map<string, symbol>());
     const [uploadingState, setUploadingState] = useState<Record<string, boolean>>({});
@@ -409,7 +412,11 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
         return { effectiveType, listOptions, switchConfig };
     };
 
-    const renderNodeInput = (node: NodeInfo, index: number) => {
+    const hasMediaValue = (value: string) => !['','none','null','undefined'].includes(String(value ?? '').trim().toLowerCase());
+    const fieldGroup = (node: NodeInfo) => { const type=getNodePresentation(node).effectiveType; return ['IMAGE','VIDEO','AUDIO','FILE'].includes(type) ? 'media' : ['LIST','SWITCH','INT','INTEGER','FLOAT','DOUBLE','NUMBER','BOOLEAN'].includes(type) ? 'short' : 'text'; };
+
+    const renderNodeInput = (originalNode: NodeInfo, index: number) => {
+        const node = ['IMAGE','AUDIO','VIDEO','FILE'].includes(getNodePresentation(originalNode).effectiveType) && !hasMediaValue(originalNode.fieldValue) ? {...originalNode,fieldValue:''} : originalNode;
         const key = node.nodeId + '_' + index;
         const fileInputId = `file-${editorDomId}-${key}`;
         const isUploading = uploadingState[key];
@@ -425,7 +432,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
             // Use buildFileUrl to convert filename to full URL
             return buildFileUrl(value, primaryApiKey);
         };
-        const mediaSrc = previewUrl || (node.fieldValue ? getMediaSrc(node.fieldValue) : '');
+        const mediaSrc = previewUrl || (hasMediaValue(node.fieldValue) ? getMediaSrc(node.fieldValue) : '');
         const showVideoPreview = effectiveType === 'VIDEO' && !!mediaSrc && !brokenVideos[key];
         const showAudioPreview = effectiveType === 'AUDIO' && !!mediaSrc && !brokenAudios[key];
 
@@ -464,7 +471,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
             case 'IMAGE':
                 // 只有用户新上传的图片（有 previewUrl）才显示预览
                 // API 返回的已有文件名需要认证才能预览，所以直接显示友好提示
-                const isDefaultImage = !previewUrl && node.fieldValue;
+                const isDefaultImage = !previewUrl && hasMediaValue(node.fieldValue);
                 const isUploadedImage = !!previewUrl;
                 const showImagePreview = isUploadedImage && !brokenImages[key];
                 const imageSrc = showImagePreview ? previewUrl : '';
@@ -473,7 +480,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                     <div className="mt-2">
                         <div
                             className={`
-                    relative w-full rounded-xl border-2 border-dashed transition-all duration-300 ease-in-out overflow-hidden group/drop
+                    media-dropzone relative w-full rounded-xl border-2 border-dashed transition-all duration-300 ease-in-out overflow-hidden group/drop
                     ${isDragging
                                     ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20 scale-[1.01]'
                                     : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0F1115]/50 hover:bg-slate-100 dark:hover:bg-slate-800 hover:border-brand-400 dark:hover:border-brand-600'
@@ -622,7 +629,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                     <div className="mt-2">
                         <div
                             className={`
-                    relative w-full rounded-xl border-2 border-dashed transition-all duration-200 ease-in-out overflow-hidden
+                    media-dropzone relative w-full rounded-xl border-2 border-dashed transition-all duration-200 ease-in-out overflow-hidden
                     ${isDragging
                                     ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20'
                                     : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0F1115] hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -908,7 +915,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
     };
 
     return (
-        <div className="flex flex-col h-full overflow-hidden">
+        <div className={`flex flex-col h-full overflow-hidden ${productionLayout ? 'production-editor' : ''}`}>
             <BatchSettingsModal
                 isOpen={isBatchModalOpen}
                 onClose={() => setIsBatchModalOpen(false)}
@@ -926,7 +933,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                 onRetryTask={onRetryTask}
             />
             {/* ... */}
-            <div className="p-5 border-b border-slate-200 dark:border-slate-800/50 bg-white dark:bg-[#161920] shrink-0 z-10 shadow-sm">
+            <div className="editor-heading p-5 border-b border-slate-200 dark:border-slate-800/50 bg-white dark:bg-[#161920] shrink-0 z-10 shadow-sm">
                 <div className="flex items-center justify-between">
                     <h2 className="text-lg font-bold flex items-center gap-2 text-slate-800 dark:text-white">
                         {mode === 'standard' ? '标准模型参数' : '参数设置'}
@@ -935,6 +942,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                         </span>
                     </h2>
                     <div className="flex items-center gap-2">
+                        {productionLayout&&<label className="hidden items-center gap-2 text-xs text-slate-500 xl:flex"><span>素材宽度</span><input aria-label="素材区域宽度" type="range" min="30" max="65" value={mediaWidth} onChange={e=>{setMediaWidth(Number(e.target.value));settingsStorage.setItem('rh_editor_media_width',e.target.value);}} className="w-20"/></label>}
                         {/* PLUS 模式切换按钮 */}
                         {mode === 'app' && <button
                             onClick={() => onInstanceTypeChange?.(instanceType === 'default' ? 'plus' : 'default')}
@@ -1018,8 +1026,11 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                 </div>
             )}
 
+            {productionLayout && isConnected && <nav className="editor-overview" aria-label="全部参数概览">
+              {localNodes.map((node,idx)=><button type="button" key={node.nodeId+'-'+idx} title={primaryLabel(node)+'：'+node.fieldValue} onClick={()=>{const element=document.getElementById(editorDomId+'-field-'+idx);element?.scrollIntoView({block:'nearest',behavior:'smooth'});element?.querySelector<HTMLElement>('textarea,select,input:not([type=file]),button')?.focus();}}>{primaryLabel(node)} <span className="text-slate-500">{String(node.fieldValue||'空').slice(0,12)}</span></button>)}
+            </nav>}
             {/* Scrollable Content */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
+            <div className={productionLayout && isConnected && localNodes.length>0 && !isNodesLoading ? "flex min-h-0 flex-1" : "flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth"}>
                 {!isConnected ? (
                     <div className="flex-1 flex flex-col items-center justify-center text-slate-400 dark:text-slate-600 py-20 text-center">
                         <AlertCircle className="w-16 h-16 mb-4 opacity-20" />
@@ -1047,6 +1058,13 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                         <p className="text-sm">无可用参数</p>
                     </div>
                 ) : (
+                    productionLayout ? <div className="editor-body" style={{'--media-fr':(mediaWidth/(100-mediaWidth))+'fr'} as React.CSSProperties}>
+                      {(['short','media','text'] as const).map(group=><section key={group} className={'editor-'+group} aria-label={group==='media'?'参考素材':group==='text'?'文字参数':'基础参数'}>
+                        {localNodes.map((node,idx)=>fieldGroup(node)===group ? <div id={editorDomId+'-field-'+idx} key={node.nodeId+'-'+idx} className={'editor-field '+(group==='media'&&!hasMediaValue(node.fieldValue)&&!previews[node.nodeId+'_'+idx]?'empty-media':'')}>
+                          <h3>{primaryLabel(node)}</h3>{renderNodeInput(node,idx)}
+                        </div>:null)}
+                      </section>)}
+                    </div> : (
                     localNodes.map((node, idx) => {
                         const { effectiveType } = getNodePresentation(node);
 
@@ -1069,11 +1087,12 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                             </div>
                         );
                     })
+                    )
                 )}
             </div>
 
             {/* Footer - 运行按钮固定在底部 */}
-            <div className="bg-white dark:bg-[#161920] border-t border-slate-200 dark:border-slate-800/50 p-4 shrink-0 flex gap-3">
+            <div className="editor-actions bg-white dark:bg-[#161920] border-t border-slate-200 dark:border-slate-800/50 p-4 shrink-0 flex gap-3">
                 {/* 单独运行按钮 */}
                 {runType === 'single' && mode !== 'standard' ? (
                     <button

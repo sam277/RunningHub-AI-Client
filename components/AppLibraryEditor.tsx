@@ -12,7 +12,7 @@ export default function AppLibraryEditor({ initial, favorites, onSave, onClose }
     const id = parseRunningHubAppInput(input.trim()).appId;
     if (!/^\d+$/.test(id) || !name.trim()) { setError('请填写有效的应用 ID / 详情页链接，以及收藏名称。'); return; }
     const existing = favorites.find(item => parseRunningHubAppInput(item.webappId).appId === id);
-    const next = { ...existing, ...initial, webappId: input.trim(), name: name.trim() };
+    const next = { ...existing, ...initial, webappId: id, name: name.trim() };
     try {
       onSave(existing ? favorites.map(item => item === existing ? next : item) : [...favorites, next]);
       onClose();
@@ -25,7 +25,7 @@ export default function AppLibraryEditor({ initial, favorites, onSave, onClose }
       <label className="block text-sm">我的名称<input aria-label="收藏名称" value={name} onChange={e => setName(e.target.value)} placeholder="例如：H3 分镜生成" className="mt-1 w-full rounded-lg border border-slate-500 bg-transparent p-2" /></label>
       <p className="text-xs text-slate-500">收藏用于找到应用；包含参数和素材的配置请另存为模板。</p>
       {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
-      <div className="flex justify-end gap-3"><button onClick={onClose}>取消</button><button onClick={save} className="rounded-lg bg-brand-600 px-4 py-2 text-white">保存收藏</button></div>
+      <div className="flex justify-end gap-3">{favorites.some(item=>parseRunningHubAppInput(item.webappId).appId===parseRunningHubAppInput(initial.webappId).appId)&&<button className="mr-auto text-red-500" onClick={()=>{onSave(favorites.filter(item=>parseRunningHubAppInput(item.webappId).appId!==parseRunningHubAppInput(initial.webappId).appId));onClose();}}>取消收藏</button>}<button onClick={onClose}>取消</button><button onClick={save} className="rounded-lg bg-brand-600 px-4 py-2 text-white">保存收藏</button></div>
     </div>
   </div>;
 }

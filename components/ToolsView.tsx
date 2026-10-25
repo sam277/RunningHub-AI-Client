@@ -1,3 +1,4 @@
+import { settingsStorage } from '../services/localPersistence';
 import React, { useEffect, useState } from 'react';
 import { LayoutTemplate, Lock, Settings, SlidersHorizontal, Volume2 } from 'lucide-react';
 import { AutoSaveConfig, HomeDefaultTab } from '../types';
@@ -41,7 +42,7 @@ const ToolsView: React.FC<ToolsViewProps> = ({
   const [reminderEnabled, setReminderEnabled] = useState(false);
 
   useEffect(() => {
-    const enabled = localStorage.getItem('rh_batch_reminder_enabled') === 'true';
+    const enabled = settingsStorage.getItem('rh_batch_reminder_enabled') === 'true';
     setReminderEnabled(enabled);
   }, [showBatchReminderModal]);
 

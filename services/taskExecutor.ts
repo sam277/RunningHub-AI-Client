@@ -24,6 +24,7 @@ export class TaskExecutionError extends Error {
 }
 
 export interface TaskUsageStats {
+  coinsReported?: boolean;
   coins: number;
   thirdParty: number;
   taskTime: number;
@@ -293,13 +294,7 @@ export const executeWorkflowTask = async ({
       ensureNotCancelled(control);
 
       if (result.status === 'SUCCESS') {
-        const usage = result.usage
-          ? {
-              coins: parseFloat(result.usage.consumeCoins) || 0,
-              thirdParty: parseFloat(result.usage.thirdPartyConsumeMoney) || 0,
-              taskTime: parseInt(result.usage.taskCostTime, 10) || 0,
-            }
-          : undefined;
+        const usage = parseTaskUsage(result.usage);
 
         await callbacks?.onGenerationResult?.(result.results);
         callbacks?.onLog?.(`${logPrefix}任务完成`);
@@ -340,3 +335,9 @@ export const executeWorkflowTask = async ({
     stopProgressMonitor();
   }
 };
+
+export function parseTaskUsage(usage?: {consumeCoins?:string;thirdPartyConsumeMoney?:string;taskCostTime?:string}): TaskUsageStats | undefined {
+  if(!usage)return undefined;
+  const reported=typeof usage.consumeCoins==='string'&&usage.consumeCoins.trim()!==''&&Number.isFinite(Number(usage.consumeCoins))&&Number(usage.consumeCoins)>=0;
+  return {coins:reported?Number(usage.consumeCoins):0,coinsReported:reported,thirdParty:parseFloat(usage.thirdPartyConsumeMoney||'')||0,taskTime:parseInt(usage.taskCostTime||'',10)||0};
+}

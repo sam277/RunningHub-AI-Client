@@ -1,3 +1,4 @@
+import { settingsStorage } from '../services/localPersistence';
 import React, { useEffect, useState } from 'react';
 import { FolderOpen, Loader2, Save, X } from 'lucide-react';
 import { AutoSaveConfig, HomeDefaultTab } from '../types';
@@ -47,13 +48,13 @@ const GeneralSettingsModal: React.FC<GeneralSettingsModalProps> = ({
   const [permissionExpired, setPermissionExpired] = useState(false);
   const [isSelectingDirectory, setIsSelectingDirectory] = useState(false);
   const [refreshStoreOnStartup, setRefreshStoreOnStartup] = useState(() => {
-    return localStorage.getItem('rh_refresh_store_startup') !== 'false';
+    return settingsStorage.getItem('rh_refresh_store_startup') !== 'false';
   });
 
   const handleToggleRefreshStore = () => {
     const nextVal = !refreshStoreOnStartup;
     setRefreshStoreOnStartup(nextVal);
-    localStorage.setItem('rh_refresh_store_startup', nextVal.toString());
+    settingsStorage.setItem('rh_refresh_store_startup', nextVal.toString());
   };
 
   useEffect(() => {

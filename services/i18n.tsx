@@ -1,3 +1,4 @@
+import { settingsStorage } from './localPersistence';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 export type AppLanguage = 'zh' | 'en';
@@ -617,7 +618,7 @@ const localizeDocument = (root: HTMLElement) => {
 export const LanguageProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [language, setLanguageState] = useState<AppLanguage>(() => {
     try {
-      return localStorage.getItem(LANGUAGE_STORAGE_KEY) === 'en' ? 'en' : 'zh';
+      return settingsStorage.getItem(LANGUAGE_STORAGE_KEY) === 'en' ? 'en' : 'zh';
     } catch {
       return 'zh';
     }
@@ -626,7 +627,7 @@ export const LanguageProvider: React.FC<React.PropsWithChildren> = ({ children }
   const setLanguage = (nextLanguage: AppLanguage) => {
     setLanguageState(nextLanguage);
     try {
-      localStorage.setItem(LANGUAGE_STORAGE_KEY, nextLanguage);
+      settingsStorage.setItem(LANGUAGE_STORAGE_KEY, nextLanguage);
     } catch {
       // Keep the in-memory language when storage is unavailable.
     }

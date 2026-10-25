@@ -1,3 +1,5 @@
+import { archiveOutputUrl } from '../../services/production';
+import { localSession } from '../../services/localPersistence';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
@@ -245,6 +247,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
     if (!url) return;
 
     try {
+      if (localSession() && await archiveOutputUrl(url)) return;
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error('download failed');
@@ -271,14 +274,14 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   };
 
   return (
-    <div className={`relative flex min-h-[600px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-[#161920] ${detailView ? 'h-full xl:grid xl:grid-cols-[minmax(0,1fr)_340px] xl:grid-rows-[auto_minmax(0,1fr)]' : 'h-[calc(100vh-120px)] max-h-[900px]'}`}>
-      <div className="xl:col-span-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/30">
+    <div className={detailView ? 'production-task bg-white dark:bg-[#161920]' : 'relative flex min-h-[600px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#161920] h-[calc(100vh-180px)]'}>
+      <div className="production-task-header xl:col-span-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/30">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="truncate text-base font-semibold text-slate-800 dark:text-white">
-                {card.webAppInfo?.webappName || card.webappId || '\u65b0\u4efb\u52a1\u5361\u7247'}
-              </h3>
+              <label className="flex min-w-0 items-center gap-2"><span className="shrink-0 text-xs text-slate-500">任务名称</span><input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
+          disabled={isBusy} onChange={event => onNameChange(event.target.value)}
+          className="min-w-0 w-full max-w-xl rounded border border-slate-300 bg-transparent px-2 py-1 text-sm dark:border-slate-600" /></label>
               <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${statusMeta.className}`}>
                 {statusMeta.label}
               </span>
@@ -304,16 +307,14 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-brand-600">
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-brand-600">
           <button disabled={!card.webappId} onClick={onFavorite}>收藏应用 / 备注名称</button>
           <button disabled={!card.isConnected} onClick={onSaveTemplate}>保存为模板</button>
           <button disabled={!card.isConnected || isBusy} onClick={onVariants}>生成提示词变体</button>
-          <span className="text-slate-500">复制包含当前全部输入；再次运行会新增生成记录。</span>
+
         </div>
-        <input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
-          disabled={isBusy} onChange={event => onNameChange(event.target.value)}
-          className="mt-3 w-full rounded-lg border border-slate-200 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-        <div className="mt-3 flex gap-2">
+
+        <details className="mt-2 text-xs" open={!card.isConnected}><summary>应用 ID / 加载</summary><div className="mt-2 flex gap-2">
           <input
             type="text"
             value={inputValue}
@@ -339,7 +340,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
             {card.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             {'\u52a0\u8f7d'}
           </button>
-        </div>
+        </div></details>
 
         {!card.isConnected && card.nodes.length > 0 && <p className="mt-2 text-xs text-amber-600">已保留原配置，加载成功后才切换应用。输回原应用 ID 可继续使用。</p>}
         <details className="mt-3 text-xs text-slate-500 dark:text-slate-400">
@@ -357,20 +358,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700 dark:border-slate-700 dark:bg-[#0F1115] dark:text-slate-200"
               />
             </label>
-            <label className="grid gap-1">
-              <span>实例保留时长（秒，仅企业共享）</span>
-              <input
-                type="number"
-                min={10}
-                max={180}
-                step={1}
-                disabled={isBusy}
-                value={card.runOptions?.retainSeconds ?? ''}
-                onChange={event => onRunOptionsChange(card.id, { ...card.runOptions, retainSeconds: event.target.value === '' ? undefined : Number(event.target.value) })}
-                placeholder="10–180，留空使用默认值"
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700 dark:border-slate-700 dark:bg-[#0F1115] dark:text-slate-200"
-              />
-            </label>
+
           </div>
         </details>
 
@@ -384,6 +372,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
 
       <div className="relative flex-1 min-h-0">
         <StepEditor
+          productionLayout={detailView}
           runLabel={['success','failed','cancelled'].includes(card.run.status) ? '再生成一次' : '运行'}
           onSnapshotChange={onSnapshotChange}
           key={card.editorRevision}
@@ -405,7 +394,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
         />
       </div>
 
-      <div className="min-h-0 overflow-y-auto border-t border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-[#161920]">
+      <div className={detailView ? "hidden" : "min-h-0 overflow-y-auto border-t border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-[#161920]"}>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             {card.run.status === 'success' ? (

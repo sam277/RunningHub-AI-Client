@@ -1,3 +1,4 @@
+import { localRequest, localSession } from './localPersistence';
 /**
  * Auto-save service - 自动保存服务
  * 
@@ -25,6 +26,7 @@ import {
 export { isTauriEnvironment as isTauri };
 
 export function isFileSystemAccessSupported(): boolean {
+  if (localSession()) return true;
   return isTauriEnvironment() || supportsFileSystemAccessAPI();
 }
 
@@ -244,6 +246,7 @@ async function clearTauriConfig(): Promise<void> {
  * @returns 目录名称（成功）或 null（取消/失败）
  */
 export async function selectDirectory(): Promise<string | null> {
+  if (localSession()) { window.dispatchEvent(new Event('rh-open-data-settings')); return 'results'; }
   const handle = await selectRootDirectory();
   
   if (!handle) {
@@ -269,6 +272,7 @@ export async function selectDirectory(): Promise<string | null> {
  * @returns 目录名称（恢复成功）或 null
  */
 export async function initAutoSave(fallbackDirectoryPath?: string | null): Promise<string | null> {
+  if (localSession()) return 'results';
   console.log('[AutoSave] Initializing auto-save service...');
   console.log('[AutoSave] Tauri environment:', isTauriEnvironment());
   
@@ -353,6 +357,7 @@ export async function initAutoSave(fallbackDirectoryPath?: string | null): Promi
  * 检查是否有目录访问权限
  */
 export function hasDirectoryAccess(): boolean {
+  if (localSession()) return true;
   return directoryHandle !== null;
 }
 
@@ -360,6 +365,7 @@ export function hasDirectoryAccess(): boolean {
  * 获取当前目录名称
  */
 export function getDirectoryName(): string | null {
+  if (localSession()) return 'results';
   if (!directoryHandle) {
     return null;
   }
@@ -367,6 +373,7 @@ export function getDirectoryName(): string | null {
 }
 
 export function getCurrentDirectoryPath(): string | null {
+  if (localSession()) return localSession()!.rootPath+'\\results';
   if (savedDirectoryPath) {
     return savedDirectoryPath;
   }
@@ -382,6 +389,7 @@ export function getCurrentDirectoryPath(): string | null {
  * 检查目录访问权限
  */
 export async function checkDirectoryAccess(): Promise<boolean> {
+  if (localSession()) return true;
   if (!directoryHandle) {
     return false;
   }
@@ -405,6 +413,7 @@ export async function checkDirectoryAccess(): Promise<boolean> {
  * 请求目录权限（浏览器模式）
  */
 export async function requestDirectoryPermission(): Promise<boolean> {
+  if (localSession()) return true;
   if (isTauriEnvironment()) {
     return directoryHandle !== null;
   }
@@ -426,6 +435,7 @@ export async function requestDirectoryPermission(): Promise<boolean> {
  * 清除目录配置
  */
 export async function clearDirectory(): Promise<void> {
+  if (localSession()) return;
   directoryHandle = null;
   savedDirectoryPath = null;
   
@@ -462,6 +472,13 @@ export async function saveFileFromUrl(
   sequential?: boolean,
   onSaved?: (receipt: { filename: string; path: string }) => void,
 ): Promise<boolean> {
+  if (localSession()) {
+    const response=await fetch(url); if(!response.ok) throw new Error('结果下载失败：'+response.status);
+    const blob=await response.blob();
+    const name=sanitizeFilename(filename || 'result_'+buildUniqueSuffix()+'.'+(sanitizeExtension(extension)||'bin'));
+    const receipt=await localRequest<{filename:string;path:string}>('/result/'+encodeURIComponent(name),{method:'PUT',body:blob});
+    onSaved?.(receipt); return true;
+  }
   if (!directoryHandle) {
     throw new Error('未选择保存目录');
   }
@@ -626,7 +643,7 @@ export async function saveMultipleFiles(files: (string | FileToSave)[]): Promise
   console.log('[AutoSave] saveMultipleFiles called, files count:', files.length);
   console.log('[AutoSave] directoryHandle exists:', !!directoryHandle);
   
-  if (!directoryHandle) {
+  if (!directoryHandle && !localSession()) {
     console.error('[AutoSave] No directory configured. Auto-save is disabled.');
     return 0;
   }

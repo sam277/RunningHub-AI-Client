@@ -1,3 +1,4 @@
+import { settingsStorage } from './localPersistence';
 import {
   ApiResponse,
   ApiInfo,
@@ -308,7 +309,7 @@ export const fetchWorkflowTemplate = async (
     let key = apiKey || '';
     if (!key) {
       try {
-        const storedStr = localStorage.getItem('rh_api_keys_v2');
+        const storedStr = settingsStorage.getItem('rh_api_keys_v2');
         if (storedStr) {
           const keys = JSON.parse(storedStr);
           if (Array.isArray(keys) && keys.length > 0) {
@@ -553,7 +554,7 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string, resolvedR
     usage = {
       thirdPartyConsumeMoney: firstItem.thirdPartyConsumeMoney || '0',
       consumeMoney: firstItem.consumeMoney || '0',
-      consumeCoins: firstItem.consumeCoins || '0',
+      consumeCoins: firstItem.consumeCoins == null || firstItem.consumeCoins === '' ? '' : String(firstItem.consumeCoins),
       taskCostTime: firstItem.taskCostTime || '0',
     };
   } else if (code === 805 && json.data?.failedReason) {
@@ -618,6 +619,7 @@ export const getAccountInfo = async (apiKey: string, resolvedRegion?: RunningHub
 
   const response = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(10000),
     headers: {
       'Content-Type': 'application/json',
       ...buildAuthHeaders(apiKey),

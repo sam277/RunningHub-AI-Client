@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { transformSync } from 'esbuild';
+import { buildSync } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 
 test('an unresponsive database fails within a deadline, closes a late connection, and permits retry', async () => {
   const source = await readFile(new URL('../services/workspaceStorage.ts', import.meta.url), 'utf8');
-  const { code } = transformSync(source, { loader: 'ts', format: 'cjs', target: 'es2022' });
+  const code = buildSync({ stdin:{contents:source,loader:'ts',resolveDir:fileURLToPath(new URL('../services',import.meta.url))}, bundle:true,write:false,format:'cjs',platform:'node',target:'es2022' }).outputFiles[0].text;
   const requests = [];
   const timers = new Map();
   let timerId = 0;

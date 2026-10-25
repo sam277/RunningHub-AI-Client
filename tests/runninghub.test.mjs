@@ -24,6 +24,13 @@ after(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 beforeEach(() => { globalThis.fetch = async () => { throw new Error('Unexpected network request'); }; });
+test('unreported consumption stays unknown while a genuine zero remains reported',()=>{
+  assert.equal(api.parseTaskUsage(undefined),undefined);
+  assert.equal(api.parseTaskUsage({consumeCoins:''}).coinsReported,false);
+  assert.equal(api.parseTaskUsage({consumeCoins:'not-a-number'}).coinsReported,false);
+  assert.equal(api.parseTaskUsage({consumeCoins:'0'}).coinsReported,true);
+  assert.equal(api.parseTaskUsage({consumeCoins:'12.5'}).coins,12.5);
+});
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const queue = (limit, running = 0, queued = 0) => json({ code: 0, data: { concurrentLimit: limit, runningCount: String(running), queuedCount: String(queued), totalCurrentTasks: String(running + queued) } });
 

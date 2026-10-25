@@ -57,7 +57,6 @@ api_test_search*.txt
 
 # User exclusions
 plans/
-package-lock.json
 RH_Skills/
 SS_tools-main/
 
@@ -74,3 +73,9 @@ Thumbs.db
 Desktop.ini
 .npm-cache/
 .browser-test-output/
+
+# Machine-local data directory pointer and credentials are never published.
+local-config.json
+local-config.json.tmp
+工作台数据/
+server-data/

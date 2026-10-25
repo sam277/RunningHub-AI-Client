@@ -1,6 +1,8 @@
+import { registerLocalFlusher, isWorkspaceReloading } from '../services/localPersistence';
+import { settingsStorage } from '../services/localPersistence';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Layers, Loader2, Play, Plus, Save, Square, Trash2, X } from 'lucide-react';
-import { getNodeList, isCapacityLimitedError } from '../services/api';
+import { getNodeList, isCapacityLimitedError, getAccountInfo } from '../services/api';
 import { createApiCapacityManagers, normalizeApiConfigs } from '../services/apiCapacity';
 import { TaskCancelledError, TaskUsageStats } from '../services/taskExecutor';
 import MultiTaskCard, { MultiTaskCardData, MultiTaskCardRunState } from './multitask/MultiTaskCard';
@@ -13,6 +15,18 @@ import ProductionHistory from './multitask/ProductionHistory';
 import ParameterReuseDialog, { ParameterChange } from './multitask/ParameterReuseDialog';
 import AppLibraryEditor from './AppLibraryEditor';
 import { playBatchReminder } from '../services/taskReminder';
+
+function InlineTableText({value,onChange,label,disabled}:{value:string;onChange:(value:string)=>void;label:string;disabled:boolean}) {
+  const [draft,setDraft]=useState(value);useEffect(()=>setDraft(value),[value]);
+  return <input aria-label={label} value={draft} disabled={disabled} onChange={event=>{setDraft(event.target.value);onChange(event.target.value);}} />;
+}
+
+function TaskOverview({card,snapshot,onEdit,onDuplicate,onNameChange,selected,onSelect}:{card:MultiTaskCardData;snapshot:StepEditorSnapshot;onEdit:()=>void;onDuplicate:()=>void;onNameChange:(name:string)=>void;selected:boolean;onSelect:(value:boolean)=>void}) {
+  const files=useMemo(()=>Object.values(snapshot.pendingFiles).filter(file=>file.type.startsWith('image/')).slice(0,3),[snapshot.pendingFiles]);
+  const [urls,setUrls]=useState<string[]>([]);
+  useEffect(()=>{const next=files.map(file=>URL.createObjectURL(file));setUrls(next);return()=>next.forEach(url=>URL.revokeObjectURL(url));},[files]);
+  return <article className="rounded-lg border border-slate-300 bg-white p-3 dark:border-slate-700 dark:bg-slate-900"><div className="mb-2 flex items-center gap-2"><input aria-label={'选择总览任务 '+(card.name||card.webappId)} type="checkbox" checked={selected} onChange={e=>onSelect(e.target.checked)}/><input aria-label={'总览任务名称 '+card.id} value={card.name||''} placeholder={card.webAppInfo?.webappName||'任务名称'} onChange={e=>onNameChange(e.target.value)} className="min-w-0 flex-1 rounded border border-slate-400 bg-transparent px-2 py-1"/></div><p className="truncate text-xs text-slate-500">{card.webAppInfo?.webappName||card.webappId||'尚未选择应用'} · {card.run.progressText}</p><div className="my-3 flex gap-2">{urls.map((url,i)=><img key={url} src={url} alt={files[i]?.name||'参考图'} className="h-20 min-w-0 flex-1 rounded bg-slate-100 object-contain dark:bg-slate-950"/>)}</div><p className="line-clamp-2 text-sm">{snapshot.nodes.find(node=>node.fieldType==='STRING')?.fieldValue||'暂无文字参数'}</p><div className="mt-3 flex gap-4 text-sm text-brand-600"><button onClick={onEdit}>编辑任务</button><button onClick={onDuplicate}>复制配置</button></div></article>;
+}
 
 export interface MultiTaskAppRequest {
   requestId: string;
@@ -189,8 +203,8 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
   const [saveStatus, setSaveStatus] = useState('正在读取上次工作区…');
   const [editorChanges, setEditorChanges] = useState(0);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'list' | 'cards'>(() => {
-    try { return localStorage.getItem('rh_multitask_view') === 'cards' ? 'cards' : 'list'; } catch { return 'list'; }
+  const [viewMode, setViewMode] = useState<'list' | 'batch' | 'cards'>(() => {
+    try { return settingsStorage.getItem('rh_multitask_view') === 'cards' ? 'cards' : settingsStorage.getItem('rh_multitask_view') === 'batch' ? 'batch' : 'list'; } catch { return 'list'; }
   });
   const [templates, setTemplates] = useState<MultiTaskDraft[]>([]);
   const [templateCardId, setTemplateCardId] = useState<string | null>(null);
@@ -206,10 +220,11 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
   const [canUndo, setCanUndo] = useState(false);
   const [showAppPicker, setShowAppPicker] = useState(false);
   const [sessionActive, setSessionActive] = useState(false);
+  useEffect(() => { window.dispatchEvent(new CustomEvent('rh-scheduler-state', { detail: sessionActive })); return () => { window.dispatchEvent(new CustomEvent('rh-scheduler-state', { detail: false })); }; }, [sessionActive]);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<MultiTaskDraft[]>(() => {
     try {
-      const raw = localStorage.getItem(MULTITASK_DRAFTS_STORAGE_KEY);
+      const raw = settingsStorage.getItem(MULTITASK_DRAFTS_STORAGE_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
       return Array.isArray(parsed)
         ? parsed
@@ -227,6 +242,8 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
   const [confirmOverwriteDraftId, setConfirmOverwriteDraftId] = useState<string | null>(null);
   const [draftPendingDelete, setDraftPendingDelete] = useState<MultiTaskDraft | null>(null);
 
+  const [removedFavorite,setRemovedFavorite]=useState<{item:Favorite;index:number}|null>(null);
+  const accountBalancesRef=useRef(new Map<string,{value:string;at:number}>());
   const editorRefs = useRef<Record<string, StepEditorRef | null>>({});
   const manualSnapshotsRef = useRef<Record<string, StepEditorSnapshot | undefined>>({});
   const sessionRef = useRef<SessionState | null>(null);
@@ -343,34 +360,38 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
   };
 
   // The editor owns live parameters; persist its snapshot rather than stale card props.
-  const saveCurrentRef = useRef<() => void>(() => {});
+  const saveCurrentRef = useRef<() => Promise<void>>(async () => {});
+  const workspacePendingRef = useRef(false);
   const saveVersionRef = useRef(0);
-  saveCurrentRef.current = () => {
-    if (!storageReady || storageFailed) return;
+  saveCurrentRef.current = async () => {
+    if (isWorkspaceReloading()) return;
+    if (!storageReady || storageFailed) throw new Error('工作区尚未就绪，不能确认完整保存。');
     const snapshots = cards.map(card => ({ card, snapshot: buildSnapshotForCard(card) }));
     if (snapshots.some(item => item.snapshot.hasUploadingFiles)) {
       setSaveStatus('素材上传中，完成后自动保存；此时请勿关闭应用');
-      return;
+      throw new Error('素材上传尚未完成，请完成后再保存或备份。');
     }
     const version = ++saveVersionRef.current;
     setSaveStatus('正在保存工作区…');
-    void writeWorkspaceData('current', { version: 1, updatedAt: Date.now(), cards: cards.map(createDraftCardFromCard) })
+    await writeWorkspaceData('current', { version: 1, updatedAt: Date.now(), cards: cards.map(createDraftCardFromCard) })
       .then(() => {
-        if (version === saveVersionRef.current) setSaveStatus('工作区已自动保存 · ' + new Date().toLocaleTimeString());
+        if (version === saveVersionRef.current) { workspacePendingRef.current=false;setSaveStatus('工作区已自动保存 · ' + new Date().toLocaleTimeString()); }
       }).catch(() => {
         if (version === saveVersionRef.current) setSaveStatus('工作区保存失败，请检查存储空间后点击重试保存');
+        throw new Error('工作区保存失败，请检查数据目录与磁盘空间。');
       });
   };
   useEffect(() => {
     if (!storageReady || storageFailed) return;
     // Invalidate any older write completion as soon as the user changes parameters.
     saveVersionRef.current += 1;
+    workspacePendingRef.current=true;
     setSaveStatus('有修改，准备自动保存…');
-    const timer = window.setTimeout(() => saveCurrentRef.current(), 500);
+    const timer = window.setTimeout(() => { void saveCurrentRef.current().catch(()=>{}); }, 500);
     return () => window.clearTimeout(timer);
   }, [cards, editorChanges, storageReady, storageFailed]);
   useEffect(() => {
-    const flush = () => saveCurrentRef.current();
+    const flush = () => { if(!isWorkspaceReloading())void saveCurrentRef.current().catch(()=>{}); };
     const handleVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
     window.addEventListener('pagehide', flush);
     document.addEventListener('visibilitychange', handleVisibility);
@@ -379,6 +400,9 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);
+
+  useEffect(()=>registerLocalFlusher(()=>saveCurrentRef.current()),[]);
+  useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(!isWorkspaceReloading()&&(workspacePendingRef.current||sessionActive)){event.preventDefault();event.returnValue='';}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard);},[sessionActive]);
 
   const updateCard = (cardId: string, updater: (card: MultiTaskCardData) => MultiTaskCardData) => {
     setCards(prev => prev.map(card => (card.id === cardId ? updater(card) : card)));
@@ -974,12 +998,18 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
               },
             }));
 
-            appendCardLog(unit.cardId, `调度到 ${apiKeys.find(entry => entry.apiKey.trim() === manager.apiKey)?.note || `账号 ${manager.index + 1}`}，当前可用槽位 ${availableSlots}`);
+            const accountLabel=latestApiKeysRef.current.find(entry=>entry.apiKey.trim()===manager.apiKey)?.note || `账号 ${manager.index+1}`;
 
             let retry = false;
             let taskPromise: Promise<void>;
             taskPromise = (async () => {
               try {
+                let balance=accountBalancesRef.current.get(manager.apiKey);
+                if(!balance||Date.now()-balance.at>30000) {
+                  try { const account=await getAccountInfo(manager.apiKey);const value=String(account.remainCoins??'').trim();balance={value:value!==''&&Number.isFinite(Number(value))?value:'未返回',at:Date.now()};accountBalancesRef.current.set(manager.apiKey,balance); }
+                  catch { balance={value:'查询暂不可用',at:Date.now()}; }
+                }
+                appendCardLog(unit.cardId,'调度到 '+accountLabel+'，查询时剩余 RH 积分 '+balance.value+'（'+new Date(balance.at).toLocaleTimeString()+'）');
                 const result = await runProductionTask({
                   apiKey: manager.apiKey,
                   webappId: unit.webappId,
@@ -1225,9 +1255,16 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
 
   if (!storageReady) return <div className="flex h-full w-full items-center justify-center text-sm text-slate-500">正在读取上次工作区…</div>;
   const activeCardId = cards.some(card => card.id === selectedCardId) ? selectedCardId : cards[0]?.id;
+  const activeCard=cards.find(card=>card.id===activeCardId);
+  const historyPanel=<ProductionHistory onPrepare={attempt => {
+        const nextId = handleCreateCard({ name: attempt.name+' · 重做', webappId: attempt.webappId, loadedAppId: parseRunningHubAppInput(attempt.webappId).appId, sourceAttemptId: attempt.id,
+          nodes: attempt.originalNodes, initialPendingFiles: attempt.pendingFiles, instanceType: attempt.instanceType || 'default', runOptions: attempt.runOptions, isConnected: true });
+        setSelectedCardId(nextId); setShowHistory(false); setSessionNotice('已按此条记录恢复输入，请核对后手动运行，将新增一次生成。');
+      }} accounts={apiKeys} autoSave={autoSaveConfig.enabled} />;
+  const changeTableField=(card:MultiTaskCardData,node:NodeInfo,value:string)=>{if(sessionRef.current?.runningCardIds.has(card.id))return;const snapshot=buildSnapshotForCard(card);if(snapshot.hasUploadingFiles)return;updateCard(card.id,current=>({...current,nodes:snapshot.nodes.map(item=>item.nodeId===node.nodeId&&item.fieldName===node.fieldName?{...item,fieldValue:value}:item),initialPendingFiles:snapshot.pendingFiles,initialBatchList:snapshot.batchList,initialBatchTaskName:snapshot.batchTaskName,editorRevision:current.editorRevision+1}));};
 
   return (
-    <div className="flex h-full w-full flex-col bg-slate-50 dark:bg-[#0F1115]">
+    <div className="production-workbench flex h-full w-full flex-col bg-slate-50 dark:bg-[#0F1115]">
       {editingFavorite && <AppLibraryEditor initial={editingFavorite} favorites={favorites} onSave={onUpdateFavorites} onClose={() => setEditingFavorite(null)} />}
       {reuse && <ParameterReuseDialog nodes={buildSnapshotForCard(cards.find(card => card.id === reuse.ids[0])!).nodes.filter(node => reuse.ids.every(id => buildSnapshotForCard(cards.find(card => card.id === id)!).nodes.some(other => other.nodeId === node.nodeId && other.fieldName === node.fieldName && other.fieldType === node.fieldType)))} count={reuse.ids.length} variant={reuse.variant} onApply={applyReuse} onClose={() => setReuse(null)} />}
       {templateCardId && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"><div role="dialog" aria-label="保存任务模板" className="w-full max-w-lg space-y-4 rounded-xl bg-white p-6 dark:bg-[#161920]">
@@ -1236,27 +1273,28 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
         {templateError && <p className="text-red-500">{templateError}</p>}
         <div className="flex justify-end gap-4"><button onClick={() => setTemplateCardId(null)}>取消</button><button onClick={saveTemplate}>保存模板</button></div>
       </div></div>}
-      <div className="border-b border-slate-200 bg-white px-6 py-4 dark:border-slate-800 dark:bg-[#161920]">
+      <div className="workbench-toolbar border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-[#161920]">
         <div className="flex items-center justify-between gap-4">
-          <div>
+          <div className="workbench-heading">
             <div className="flex items-center gap-2">
               <Layers className="h-5 w-5 text-brand-500" />
-              <h2 className="text-lg font-bold text-slate-800 dark:text-white">多任务模式</h2>
+              <h2 className="text-base font-semibold text-slate-800 dark:text-white">多任务模式</h2>
             </div>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              同一应用用批量设置换图、换提示词；不同应用分别编辑，统一并发运行。当前并发槽位 {totalConfiguredSlots}
+              当前并发槽位 {totalConfiguredSlots}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <button onClick={() => setShowHistory(value => !value)} className="rounded-lg border border-slate-500 px-3 py-2 text-sm">{showHistory ? '返回编辑' : '生成记录'}</button>
+            <button onClick={()=>setShowAppPicker(value=>!value)} className="rounded-lg border border-slate-500 px-3 py-2 text-sm">草稿 / 模板</button>
             <div className="flex rounded-lg border border-slate-200 p-1 dark:border-slate-700" aria-label="任务视图">
-              {(['list', 'cards'] as const).map(mode => <button key={mode} aria-pressed={viewMode === mode}
-                onClick={() => { setViewMode(mode); try { localStorage.setItem('rh_multitask_view', mode); } catch {} }}
-                className={`rounded px-3 py-1 text-xs ${viewMode === mode ? 'bg-brand-600 text-white' : 'text-slate-500'}`}>{mode === 'list' ? '列表编辑' : '卡片总览'}</button>)}
+              {(['list', 'batch', 'cards'] as const).map(mode => <button key={mode} aria-pressed={viewMode === mode}
+                onClick={() => { setViewMode(mode); try { settingsStorage.setItem('rh_multitask_view', mode); } catch {} }}
+                className={`rounded px-3 py-1 text-xs ${viewMode === mode ? 'bg-brand-600 text-white' : 'text-slate-500'}`}>{mode === 'list' ? '列表编辑' : mode === 'batch' ? '批量对照' : '卡片总览'}</button>)}
             </div>
             <button
-              onClick={() => setShowAppPicker(prev => !prev)}
+              onClick={() => handleCreateCard()}
               className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-brand-300 hover:text-brand-500 dark:border-slate-700 dark:bg-[#1a1d24] dark:text-slate-300"
             >
               <Plus className="h-4 w-4" />
@@ -1295,7 +1333,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
 
         <div className="mt-2 flex items-center gap-3 text-xs text-slate-500" role="status">
           <span>{saveStatus}</span>
-          {!storageFailed && <button className="text-brand-600" onClick={() => saveCurrentRef.current()}>立即保存 / 重试</button>}
+          {!storageFailed && <button className="text-brand-600" onClick={() => { void saveCurrentRef.current().catch(()=>{}); }}>立即保存 / 重试</button>}
           <span>恢复配置与素材，不自动重新提交任务。</span>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
@@ -1415,13 +1453,14 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
         )}
       </div>
 
-      <div className={showHistory ? 'min-h-0 flex-1 overflow-auto' : 'hidden'}><ProductionHistory onPrepare={attempt => {
-        const nextId = handleCreateCard({ name: attempt.name+' · 重做', webappId: attempt.webappId, loadedAppId: parseRunningHubAppInput(attempt.webappId).appId, sourceAttemptId: attempt.id,
-          nodes: attempt.originalNodes, initialPendingFiles: attempt.pendingFiles, instanceType: attempt.instanceType || 'default', runOptions: attempt.runOptions, isConnected: true });
-        setSelectedCardId(nextId); setShowHistory(false); setSessionNotice('已按此条记录恢复输入，请核对后手动运行，将新增一次生成。');
-      }} accounts={apiKeys} autoSave={autoSaveConfig.enabled} /></div>
-      <div className={showHistory ? 'hidden' : 'flex min-h-0 flex-1'}>
-        {viewMode === 'list' && <aside className="w-64 shrink-0 overflow-y-auto border-r border-slate-200 p-3 dark:border-slate-800" aria-label="任务列表">
+      {showHistory && <div className="min-h-0 flex-1 overflow-auto">{historyPanel}</div>}
+      <div className={showHistory ? 'hidden' : 'production-layout'}>
+        {<aside className="production-library" aria-label="任务列表">
+          <section aria-label="我的收藏" className="mb-4 border-b border-slate-300 pb-3 dark:border-slate-700"><div className="mb-2 flex justify-between text-sm font-medium"><span>我的收藏</span><button onClick={()=>setEditingFavorite({webappId:'',name:''})}>添加</button></div>
+            {!favorites.length&&<p className="text-xs text-slate-500">通过 ID / 链接收藏应用</p>}
+            {favorites.map((item,index)=><div key={item.webappId} className="mb-1 flex items-center gap-1"><button className="min-w-0 flex-1 truncate py-2 text-left text-sm" onClick={()=>void handleCreateCardFromPreset({webappId:item.webappId,nodes:item.nodes,appInfo:item.appInfo,name:item.name},true)} title={item.name}>{item.name||item.appInfo?.webappName||item.webappId}</button><button className="text-xs text-slate-500" aria-label={'改名收藏 '+item.name} onClick={()=>setEditingFavorite(item)}>改名</button><button className="px-1 text-slate-500" aria-label={'取消收藏 '+item.name} onClick={()=>{setRemovedFavorite({item,index});onUpdateFavorites(favorites.filter((_,i)=>i!==index));}}>×</button></div>)}
+            {removedFavorite&&<button className="text-xs text-brand-600" onClick={()=>{const next=[...favorites];next.splice(Math.min(removedFavorite.index,next.length),0,removedFavorite.item);onUpdateFavorites(next);setRemovedFavorite(null);}}>撤销取消收藏</button>}
+          </section><h3 className="mb-2 text-sm font-medium">待运行任务</h3>
           {cards.map((card, index) => <div key={card.id} className="mb-2 flex items-start gap-2">
             <input type="checkbox" aria-label={`选择任务 ${index+1}`} checked={selection.has(card.id)} onChange={e => setSelection(previous => { const next = new Set(previous); e.target.checked ? next.add(card.id) : next.delete(card.id); return next; })} className="mt-4" />
             <button onClick={() => setSelectedCardId(card.id)} aria-pressed={activeCardId === card.id}
@@ -1432,7 +1471,8 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
           </div>)}
           <p className="mt-3 text-xs leading-5 text-slate-500">同应用多素材：打开任务内的批量设置，一次导入多张图片。不同应用：新建任务后分别配置。</p>
         </aside>}
-      <div className="min-w-0 flex-1 overflow-auto p-4">
+      <div className={viewMode==='cards'?"min-h-0 min-w-0 overflow-auto p-3":"production-editor-area"}>
+        {viewMode==='batch'&&<div className="production-batch-grid" aria-label="批量对照编辑"><table><thead><tr><th>任务名称</th><th>应用</th><th>首个文字参数</th><th>选择编辑</th></tr></thead><tbody>{cards.map((card,index)=>{const snapshot=buildSnapshotForCard(card),node=snapshot.nodes.find(item=>item.fieldType==='STRING');return <tr key={card.id}><td><input aria-label={'批量任务名称 '+(index+1)} value={card.name||''} disabled={!!sessionRef.current?.runningCardIds.has(card.id)} onChange={e=>updateCard(card.id,current=>({...current,name:e.target.value}))}/></td><td>{card.webAppInfo?.webappName||card.webappId||'未加载'}</td><td>{node?<InlineTableText label={'批量文字参数 '+(index+1)} value={node.fieldValue} disabled={snapshot.hasUploadingFiles||!!sessionRef.current?.runningCardIds.has(card.id)} onChange={value=>changeTableField(card,node,value)}/>:<span>无文字参数</span>}</td><td><button onClick={()=>setSelectedCardId(card.id)}>编辑此行</button></td></tr>;})}</tbody></table></div>}
         {cards.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-8 py-12 text-center dark:border-slate-700 dark:bg-[#161920]">
@@ -1442,14 +1482,15 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
             </div>
           </div>
         ) : (
-          <div className={viewMode === 'cards' ? 'grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4' : 'h-full'}>
+          <div className={viewMode === 'cards' ? 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3' : 'h-full'}>
             {cards.map(card => (
-              <div key={card.id} className={viewMode === 'list' ? (card.id === activeCardId ? 'h-full' : 'hidden') : ''}>
-              <MultiTaskCard
+              <div key={card.id} className={viewMode !== 'cards' ? (card.id === activeCardId ? 'h-full' : 'hidden') : ''}>
+              {viewMode==='cards'&&<TaskOverview card={card} snapshot={buildSnapshotForCard(card)} selected={selection.has(card.id)} onSelect={value=>setSelection(previous=>{const next=new Set(previous);value?next.add(card.id):next.delete(card.id);return next;})} onNameChange={name=>updateCard(card.id,current=>({...current,name}))} onDuplicate={()=>handleDuplicateCard(card.id)} onEdit={()=>{setSelectedCardId(card.id);setViewMode('list');}}/>}
+              <div className={viewMode==='cards'?'hidden':'h-full'}><MultiTaskCard
                 onFavorite={() => setEditingFavorite({ webappId: card.webappId, name: favorites.find(item => item.webappId === card.webappId)?.name || card.webAppInfo?.webappName || card.name || '', appInfo: card.webAppInfo || undefined })}
                 onSaveTemplate={() => { setTemplateCardId(card.id); setTemplateName(card.name || card.webAppInfo?.webappName || ''); setTemplateError(''); }}
                 onVariants={() => openReuse([card.id], true)}
-                detailView={viewMode === 'list'}
+                detailView={true}
                 onSnapshotChange={() => setEditorChanges(value => value + 1)}
                 onNameChange={name => updateCard(card.id, current => ({ ...current, name }))}
 
@@ -1475,13 +1516,15 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
                     instanceType: nextType,
                   }));
                 }}
-              />
+              /></div>
               </div>
             ))}
           </div>
         )}
       </div>
-
+        {!showHistory&&<aside className="production-history" aria-label="生成记录侧栏">{historyPanel}
+          <details className="border-t border-slate-300 p-3 text-xs dark:border-slate-700"><summary>当前任务运行日志</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap">{activeCard?.run.logs.join('\n')||'暂无日志'}</pre></details>
+        </aside>}
       </div>
 
       {isSaveDraftModalOpen && (

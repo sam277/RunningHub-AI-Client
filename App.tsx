@@ -1,9 +1,10 @@
+import { settingsStorage } from './services/localPersistence';
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Home, Settings, User, Layers, Languages } from 'lucide-react';
 import type { StepRunningRef } from './components/StepRunning';
 import type { MultiTaskAppRequest } from './components/MultiTaskView';
 import SettingsModal from './components/SettingsModal';
-import Footer from './components/Footer';
+import LocalDataPanel from './components/LocalDataPanel';
 import TermsModal from './components/TermsModal';
 import { NodeInfo, TaskOutput, WebAppInfo, ApiKeyEntry, AutoSaveConfig, Favorite, HistoryItem, RecentApp, FailedTaskInfo, InstanceType, HomeDefaultTab, StandardModelConfig } from './types';
 import { saveMultipleFiles, getDirectoryName, initAutoSave, checkDirectoryAccess, getCurrentDirectoryPath } from './services/autoSaveService';
@@ -95,21 +96,21 @@ function App() {
   // Global View State
   const [startupView, setStartupView] = useState<StartupView>(() => {
     try {
-      return normalizeStartupView(localStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
+      return normalizeStartupView(settingsStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
     } catch {
       return 'home';
     }
   });
   const [homeDefaultTab, setHomeDefaultTab] = useState<HomeDefaultTab>(() => {
     try {
-      return normalizeHomeDefaultTab(localStorage.getItem(STORAGE_KEY_HOME_DEFAULT_TAB));
+      return normalizeHomeDefaultTab(settingsStorage.getItem(STORAGE_KEY_HOME_DEFAULT_TAB));
     } catch {
       return 'favorites';
     }
   });
   const [currentView, setCurrentView] = useState<AppView>(() => {
     try {
-      return normalizeStartupView(localStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
+      return normalizeStartupView(settingsStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
     } catch {
       return 'home';
     }
@@ -123,14 +124,14 @@ function App() {
   const [webappId, setWebappId] = useState('');
   const [apiKeys, setApiKeys] = useState<ApiKeyEntry[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_API_KEYS);
+      const saved = settingsStorage.getItem(STORAGE_KEY_API_KEYS);
       const parsed = saved ? JSON.parse(saved) : [];
       return normalizeApiKeys(parsed).map(entry => ({ ...entry, loading: false, error: undefined }));
     } catch { return [createEmptyApiKeyEntry()]; }
   });
   const [enterpriseApi, setEnterpriseApi] = useState<ApiKeyEntry>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_ENTERPRISE_API);
+      const saved = settingsStorage.getItem(STORAGE_KEY_ENTERPRISE_API);
       return normalizeApiKeyEntry(saved ? JSON.parse(saved) : null);
     } catch {
       return createEmptyApiKeyEntry();
@@ -168,8 +169,8 @@ function App() {
 
     setApiKeys(normalizedKeys);
 
-    if (localStorage.getItem(STORAGE_KEY_API_KEYS)) {
-      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
+    if (settingsStorage.getItem(STORAGE_KEY_API_KEYS)) {
+      settingsStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
     }
   }, []);
 
@@ -183,7 +184,7 @@ function App() {
   // Recent Apps
   const [recentApps, setRecentApps] = useState<RecentApp[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_RECENT);
+      const saved = settingsStorage.getItem(STORAGE_KEY_RECENT);
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
@@ -194,7 +195,7 @@ function App() {
   // AutoSave Config
   const [autoSaveConfig, setAutoSaveConfig] = useState<AutoSaveConfig>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_AUTOSAVE);
+      const saved = settingsStorage.getItem(STORAGE_KEY_AUTOSAVE);
       if (saved) {
         return normalizeAutoSaveConfig(JSON.parse(saved));
         // 只有当目录名存在时才启用自动保存
@@ -208,7 +209,7 @@ function App() {
   // Favorites
   const [favorites, setFavorites] = useState<Favorite[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_FAVORITES);
+      const saved = settingsStorage.getItem(STORAGE_KEY_FAVORITES);
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
@@ -222,14 +223,14 @@ function App() {
   const persistAutoSaveConfig = (config: AutoSaveConfig) => {
     const normalized = normalizeAutoSaveConfig(config);
     setAutoSaveConfig(normalized);
-    localStorage.setItem(STORAGE_KEY_AUTOSAVE, JSON.stringify(normalized));
+    settingsStorage.setItem(STORAGE_KEY_AUTOSAVE, JSON.stringify(normalized));
   };
 
   useEffect(() => {
     // Force Dark Mode by default
     document.documentElement.classList.add('dark');
 
-    const agreed = localStorage.getItem('rh_terms_agreed');
+    const agreed = settingsStorage.getItem('rh_terms_agreed');
     if (!agreed) {
       setTermsMode('first-time');
       setShowTermsModal(true);
@@ -282,7 +283,7 @@ function App() {
       const updated = [newApp, ...filtered].slice(0, 11); // Keep 11 to show 10 after filter/slice or just slice 10
       // actually slice 10 is fine
       const final = updated.slice(0, 10);
-      localStorage.setItem(STORAGE_KEY_RECENT, JSON.stringify(final));
+      settingsStorage.setItem(STORAGE_KEY_RECENT, JSON.stringify(final));
       return final;
     });
   };
@@ -360,17 +361,17 @@ function App() {
 
   const handleUpdateFavorites = (updatedFavs: Favorite[]) => {
     setFavorites(updatedFavs);
-    localStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(updatedFavs));
+    settingsStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(updatedFavs));
   };
 
   const handleUpdateApiKeys = (newKeys: ApiKeyEntry[], saveToStorage: boolean = true) => {
     const normalizedKeys = normalizeApiKeys(newKeys);
     setApiKeys(normalizedKeys);
     if (saveToStorage) {
-      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
+      settingsStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
     } else {
       // 如果不保存，则清除 localStorage 中已保存的 API Keys
-      localStorage.removeItem(STORAGE_KEY_API_KEYS);
+      settingsStorage.removeItem(STORAGE_KEY_API_KEYS);
     }
   };
 
@@ -378,9 +379,9 @@ function App() {
     const normalizedKey = normalizeApiKeyEntry(newKey);
     setEnterpriseApi(normalizedKey);
     if (saveToStorage) {
-      localStorage.setItem(STORAGE_KEY_ENTERPRISE_API, JSON.stringify(normalizedKey));
+      settingsStorage.setItem(STORAGE_KEY_ENTERPRISE_API, JSON.stringify(normalizedKey));
     } else {
-      localStorage.removeItem(STORAGE_KEY_ENTERPRISE_API);
+      settingsStorage.removeItem(STORAGE_KEY_ENTERPRISE_API);
     }
   };
 
@@ -390,12 +391,12 @@ function App() {
 
   const handleUpdateStartupView = (view: StartupView) => {
     setStartupView(view);
-    localStorage.setItem(STORAGE_KEY_STARTUP_VIEW, view);
+    settingsStorage.setItem(STORAGE_KEY_STARTUP_VIEW, view);
   };
 
   const handleUpdateHomeDefaultTab = (tab: HomeDefaultTab) => {
     setHomeDefaultTab(tab);
-    localStorage.setItem(STORAGE_KEY_HOME_DEFAULT_TAB, tab);
+    settingsStorage.setItem(STORAGE_KEY_HOME_DEFAULT_TAB, tab);
   };
 
   const handleSwitchView = (view: AppView) => {
@@ -415,7 +416,7 @@ function App() {
       } else {
         newFavs = [...prev, app];
       }
-      localStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(newFavs));
+      settingsStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(newFavs));
       return newFavs;
     });
   };
@@ -447,7 +448,7 @@ function App() {
   };
 
   const handleAgreeTerms = () => {
-    localStorage.setItem('rh_terms_agreed', 'true');
+    settingsStorage.setItem('rh_terms_agreed', 'true');
     setShowTermsModal(false);
   };
 
@@ -466,10 +467,10 @@ function App() {
   return (
     <div className="h-screen flex flex-col text-slate-800 dark:text-slate-100 font-sans selection:bg-brand-100 selection:text-brand-700 dark:selection:bg-brand-900 dark:selection:text-brand-200 transition-colors duration-300 overflow-hidden bg-slate-100 dark:bg-[#0F1115]">
       {/* Header */}
-      <header className="bg-white dark:bg-[#0F1115] border-b border-slate-200 dark:border-slate-800/50 h-14 flex items-center justify-between pr-4 shrink-0 z-20 shadow-sm">
+      <header className="bg-white dark:bg-[#0F1115] border-b border-slate-200 dark:border-slate-800/50 h-12 flex items-center justify-between pr-4 shrink-0 z-20 shadow-sm">
         <div className="flex items-center h-full gap-3">
-          <img src="/r.png" alt="RunningHub" className="h-10 w-auto ml-2" />
-          <span className="text-xl font-bold text-slate-800 dark:text-white tracking-wide">{text('RH个人工作台 v1.6.7', 'RH Personal Workspace v1.6.7')}</span>
+          <img src="/r.png" alt="RunningHub" className="h-8 w-auto ml-2" />
+          <span className="text-base font-semibold text-slate-800 dark:text-white tracking-wide">{text('RH个人工作台 v1.6.7', 'RH Personal Workspace v1.6.7')}</span>
           <button
             onClick={handleOpenAbout}
             className="ml-2 px-2 py-0.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-full transition-colors"
@@ -650,7 +651,7 @@ function App() {
         </div>
       </Suspense>
 
-      <Footer />
+      <LocalDataPanel />
 
       <SettingsModal
         isOpen={showSettings}

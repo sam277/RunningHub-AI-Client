@@ -1,13 +1,17 @@
 import { ApiKeyEntry, NodeInfo, PendingFilesMap, TaskOutput, WorkflowRunOptions } from '../types';
-import { executeWorkflowTask, ExecuteTaskRequest, TaskExecutionError, TaskCancelledError, TaskUsageStats, selectPendingFilesForTask } from './taskExecutor';
+import { executeWorkflowTask, ExecuteTaskRequest, TaskExecutionError, TaskCancelledError, TaskUsageStats, selectPendingFilesForTask, parseTaskUsage } from './taskExecutor';
 import { isCapacityLimitedError, queryTaskResult } from './api';
 import { getResolvedRunningHubRegion } from './runningHubRegion';
 import { saveFileFromUrl } from './autoSaveService';
-import { listWorkspaceData, readWorkspaceData, writeWorkspaceData, patchWorkspaceFields } from './workspaceStorage';
+import { listWorkspaceData, readWorkspaceData, writeWorkspaceData, patchWorkspaceFields, allocateGenerationSequence, listWorkspaceMetadata, readWorkspaceMetadata } from './workspaceStorage';
+import { flushLocalSettings } from './localPersistence';
 
 export type AttemptStatus = 'preparing' | 'submitting' | 'unknown' | 'queued' | 'running' | 'query_failed' | 'generation_failed' | 'rejected' | 'interrupted' | 'completed' | 'downloading' | 'download_failed' | 'saved';
 export interface ProductionAttempt {
   parentAttemptId?: string;
+  sequence?: number;
+  localResultsMissing?: boolean;
+  missingResultIndexes?: number[];
   id: string; cardId: string; name: string; webappId: string; createdAt: number; updatedAt: number;
   accountId: string; accountNote: string; accountSignature?: string; region: string; status: AttemptStatus;
   originalNodes: NodeInfo[]; submittedNodes?: NodeInfo[]; pendingFiles: PendingFilesMap;
@@ -27,6 +31,9 @@ const recovering = new Set<string>();
 const downloading = new Set<string>();
 const notify = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event('rh-production-change')); };
 export const listAttempts = async () => (await listWorkspaceData<ProductionAttempt>('attempt:')).sort((a,b) => b.createdAt-a.createdAt);
+export const listAttemptSummaries = async () => (await listWorkspaceMetadata<ProductionAttempt>('attempt:')).sort((a,b)=>b.createdAt-a.createdAt);
+export const loadAttemptInputs = (id:string) => readWorkspaceData<ProductionAttempt>('attempt:'+id);
+export const attemptNumber = (attempt:ProductionAttempt) => attempt.sequence ? String(attempt.sequence).padStart(4,'0') : '旧记录';
 export const saveAttempt = async (attempt: ProductionAttempt) => {
   const next = { ...attempt, updatedAt: Date.now() };
   const mutable = { status: next.status, updatedAt: next.updatedAt, taskId: next.taskId, submittedNodes: next.submittedNodes, outputs: next.outputs, files: next.files, error: next.error, usage: next.usage };
@@ -36,7 +43,7 @@ export const saveAttempt = async (attempt: ProductionAttempt) => {
 export const setAttemptDecision = async (id: string, decision: 'adopted' | 'redo') => {
   await patchWorkspaceFields('attempt:'+id, { decision, updatedAt: Date.now() }); notify();
 };
-export const hasUnresolvedAttempt = async (cardId: string) => (await listAttempts()).some(item => item.cardId === cardId && ['unknown','submitting','query_failed','queued','running'].includes(item.status));
+export const hasUnresolvedAttempt = async (cardId: string) => (await listAttemptSummaries()).some(item => item.cardId === cardId && ['unknown','submitting','query_failed','queued','running'].includes(item.status));
 export const isAccountUnavailableError = (error: any) => !error?.taskSubmitted && (
   ['401','403'].includes(String(error?.code)) || /HTTP Error: (401|403)/.test(String(error?.message)) ||
   /insufficient|invalid.*(key|token)|unauthori[sz]ed|余额不足|API Key 校验失败|密钥.*(无效|错误)|权限不足/i.test(String(error?.message)));
@@ -48,35 +55,40 @@ export const outputFileExtension = (output: TaskOutput) => {
   try { const ext = new URL(output.fileUrl || output.downloadUrl || '').pathname.match(/\.([a-z0-9]{1,10})$/i)?.[1]; if (ext) return ext; } catch {}
   return 'bin';
 };
-export async function archiveAttempt(id: string): Promise<ProductionAttempt | undefined> {
+export async function archiveAttempt(id: string, onlyIndex?: number): Promise<ProductionAttempt | undefined> {
   if (downloading.has(id)) return;
   downloading.add(id);
   try {
-    let attempt = await readWorkspaceData<ProductionAttempt>('attempt:'+id);
+    let attempt = await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);
     if (!attempt) throw new Error('找不到生成记录');
+    if (attempt.localResultsMissing) attempt={...attempt,files:attempt.files.filter(file=>!attempt!.missingResultIndexes?.includes(file.index))};
     if (!attempt.outputs.length) return saveAttempt({ ...attempt, status: 'completed', error: '接口未返回可保存的结果文件。' });
     attempt = await saveAttempt({ ...attempt, status: 'downloading', error: undefined });
     for (let index=0; index<attempt.outputs.length; index++) {
+      if (onlyIndex !== undefined && onlyIndex !== index) continue;
       if (attempt.files.some(file => file.index === index)) continue;
       const output = attempt.outputs[index];
       let receipt: { filename: string; path: string } | undefined;
       try {
         const extension = outputFileExtension(output);
-        await saveFileFromUrl(output.fileUrl || output.downloadUrl || '', attempt.name.slice(0,60)+'_'+attempt.id+'_'+(index+1)+'.'+extension, extension, false, saved => { receipt = saved; });
+        const prefix=attempt.sequence ? attemptNumber(attempt)+'_' : '';
+        await saveFileFromUrl(output.fileUrl || output.downloadUrl || '', prefix+attempt.name.slice(0,60)+'_'+attempt.id+'_'+(index+1)+'.'+extension, extension, false, saved => { receipt = saved; });
         if (!receipt) throw new Error('保存没有返回文件位置，不能确认归档成功');
         attempt = await saveAttempt({ ...attempt, files: [...attempt.files, { index, ...receipt }], error: undefined });
       } catch (error: any) {
         return saveAttempt({ ...attempt, status: 'download_failed', error: error?.message || '下载失败' });
       }
     }
-    return saveAttempt({ ...attempt, status: 'saved', error: undefined });
+    return saveAttempt({ ...attempt, status: attempt.files.length === attempt.outputs.length ? 'saved' : 'completed', error: undefined });
   } finally { downloading.delete(id); }
 }
 
 export async function runProductionTask(request: ExecuteTaskRequest, context: { cardId: string; name: string; account: ApiKeyEntry; parentAttemptId?: string }) {
+  await flushLocalSettings();
+  const id=crypto.randomUUID();
   let attempt: ProductionAttempt = {
     parentAttemptId: context.parentAttemptId,
-    id: crypto.randomUUID(), cardId: context.cardId, name: context.name || '任务', webappId: request.webappId,
+    id, sequence:await allocateGenerationSequence(id), cardId: context.cardId, name: context.name || '任务', webappId: request.webappId,
     accountSignature: await signature(request.apiKey), accountId: context.account.id, accountNote: context.account.note || '未备注账号',
     region: getResolvedRunningHubRegion(request.apiKey), createdAt: Date.now(), updatedAt: Date.now(), status: 'preparing',
     originalNodes: structuredClone(request.taskNodes), pendingFiles: selectPendingFilesForTask(request.taskNodes, request.pendingFiles, request.taskIndex), unitIndex: request.taskIndex || 0,
@@ -128,7 +140,7 @@ export async function recoverAttempt(id: string, accounts: ApiKeyEntry[], autoSa
   if (active.has(id) || recovering.has(id)) return;
   recovering.add(id);
   try {
-    let attempt = await readWorkspaceData<ProductionAttempt>('attempt:'+id);
+    let attempt = await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);
     if (!attempt) return;
     if (attempt.status === 'downloading' && !downloading.has(id)) {
       await saveAttempt({ ...attempt, status: 'download_failed', error: '上次保存过程已中断，可单独重试下载。' });
@@ -148,9 +160,15 @@ export async function recoverAttempt(id: string, accounts: ApiKeyEntry[], autoSa
       const result = await queryTaskResult(account.apiKey, attempt.taskId, attempt.region === 'cn' ? 'cn' : 'global');
       attempt = await saveAttempt({ ...attempt, status: result.status === 'SUCCESS' ? 'completed' : result.status === 'FAILED' ? 'generation_failed' : result.status === 'RUNNING' ? 'running' : 'queued',
         outputs: result.status === 'SUCCESS' ? result.results : attempt.outputs,
+        usage: result.status === 'SUCCESS' ? parseTaskUsage(result.usage) || attempt.usage : attempt.usage,
         error: result.status === 'FAILED' ? result.errorMessage || result.failedReason?.exception_message || '生成失败' : undefined });
       if (attempt.status === 'completed' && autoSave) return archiveAttempt(id);
       return attempt;
     } catch (error: any) { return saveAttempt({ ...attempt, status: 'query_failed', error: error?.message || '查询失败' }); }
   } finally { recovering.delete(id); }
+}
+
+export async function archiveOutputUrl(url:string) {
+  for(const attempt of await listAttemptSummaries()) { const index=attempt.outputs.findIndex(output=>(output.fileUrl||output.downloadUrl)===url);if(index>=0){await archiveAttempt(attempt.id,index);return true;} }
+  return false;
 }

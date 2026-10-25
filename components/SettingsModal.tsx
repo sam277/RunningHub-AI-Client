@@ -1,3 +1,4 @@
+import { localSession, flushLocalSettings, settingsStorage } from '../services/localPersistence';
 import React, { useRef, useState } from 'react';
 import { Check, Coins, Globe2, Key, Loader2, Plus, RefreshCw, Save, Trash2, User, X } from 'lucide-react';
 import { ApiInfo, ApiKeyEntry, AutoSaveConfig, RunningHubRegionMode } from '../types';
@@ -135,7 +136,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   onUpdateEnterpriseApi,
 }) => {
   const [loadingAny, setLoadingAny] = useState(false);
-  const [saveApiKeyEnabled, setSaveApiKeyEnabled] = useState(() => localStorage.getItem(STORAGE_KEY_SAVE_API) === 'true');
+  const [saveApiKeyEnabled, setSaveApiKeyEnabled] = useState(() => settingsStorage.getItem(STORAGE_KEY_SAVE_API) === 'true');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [regionMode, setRegionMode] = useState<RunningHubRegionMode>(() => getRunningHubRegionMode());
 
@@ -149,9 +150,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleRegionModeChange = (mode: RunningHubRegionMode) => {
     setRegionMode(mode);
     setRunningHubRegionMode(mode);
-    localStorage.removeItem('rh_official_apps_cache');
-    localStorage.removeItem('rh_official_apps_cache_cn');
-    localStorage.removeItem('rh_official_apps_cache_global');
+    settingsStorage.removeItem('rh_official_apps_cache');
+    settingsStorage.removeItem('rh_official_apps_cache_cn');
+    settingsStorage.removeItem('rh_official_apps_cache_global');
   };
 
   const updateEntries = (updater: (currentEntries: ApiKeyEntry[]) => ApiKeyEntry[], saveToStorage = latestSettings.current.saveApiKeyEnabled) => {
@@ -180,7 +181,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       onUpdateApiKeys(latestSettings.current.entries, enabled);
       onUpdateEnterpriseApi(latestSettings.current.enterpriseEntry, enabled);
-      localStorage.setItem(STORAGE_KEY_SAVE_API, String(enabled));
+      settingsStorage.setItem(STORAGE_KEY_SAVE_API, String(enabled));
       latestSettings.current.saveApiKeyEnabled = enabled;
       setSaveApiKeyEnabled(enabled);
       setSaveError(null);
@@ -417,7 +418,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
         <div className="border-t border-slate-100 px-6 py-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400" role="status">
           {saveError || (saveApiKeyEnabled ? `已启用本地保存：${configuredEntries.length} 个账号，包含备注。修改后自动保存。` : '尚未启用本地保存：关闭应用后不会保留当前账号。')}
-          <div className="mt-1">保存位置：当前应用的本地存储（浏览器版为此网址的本地存储），不是下载目录中的文件。密钥未加密，仅在可信设备上启用。</div>
+          <div className="mt-1">保存位置：{localSession() ? localSession()!.rootPath+'（独立文件库，密钥受当前 Windows 用户保护）' : '浏览器本地存储（未加密）'}。完整备份与恢复请打开“数据与备份”。</div>
         </div>
         <div className="flex items-center justify-between gap-4 border-t border-slate-100 px-6 py-4 dark:border-slate-800/50">
           <label className="flex cursor-pointer items-center gap-2 select-none">
@@ -436,7 +437,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             <span className="hidden text-xs text-slate-400 dark:text-slate-500 sm:inline">关闭后下次打开需重新填写，当前窗口仍可用</span>
           </label>
           <button
-            onClick={() => { if (persistAccounts(saveApiKeyEnabled)) onClose(); }}
+            onClick={async () => { if (persistAccounts(saveApiKeyEnabled)) { try { await flushLocalSettings(); onClose(); } catch(e:any) { setSaveError(e.message); } } }}
             className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-8 py-2.5 font-semibold text-white shadow-lg shadow-brand-500/20 transition-all hover:bg-brand-700"
           >
             <Save className="h-4 w-4" />

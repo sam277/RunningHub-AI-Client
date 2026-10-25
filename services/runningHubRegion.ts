@@ -1,3 +1,4 @@
+import { settingsStorage } from './localPersistence';
 import type { RunningHubRegion, RunningHubRegionMode } from '../types';
 
 export const RUNNING_HUB_HOSTS: Record<RunningHubRegion, string> = {
@@ -14,7 +15,7 @@ const pendingApiRegionResolutions = new Map<string, Promise<RunningHubRegion>>()
 
 const readStorage = (key: string): string | null => {
   try {
-    return localStorage.getItem(key);
+    return settingsStorage.getItem(key);
   } catch {
     return null;
   }
@@ -22,7 +23,7 @@ const readStorage = (key: string): string | null => {
 
 const writeStorage = (key: string, value: string) => {
   try {
-    localStorage.setItem(key, value);
+    settingsStorage.setItem(key, value);
   } catch {
     // Region detection still works in memory when storage is unavailable.
   }
