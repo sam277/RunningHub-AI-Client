@@ -180,6 +180,9 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
   onUpdateFavorites,
   appToOpen,
 }) => {
+  const latestApiKeysRef = useRef(apiKeys);
+  latestApiKeysRef.current = apiKeys;
+  const accountIsEnabled = (key: string) => latestApiKeysRef.current.some(entry => entry.apiKey.trim() === key && entry.enabled !== false);
   const [cards, setCards] = useState<MultiTaskCardData[]>(() => [createCard()]);
   const [storageReady, setStorageReady] = useState(false);
   const [storageFailed, setStorageFailed] = useState(false);
@@ -927,7 +930,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
         let launchedCount = 0;
 
         for (const manager of capacityManagers) {
-          if (unavailableKeys.has(manager.apiKey)) continue;
+          if (unavailableKeys.has(manager.apiKey) || !accountIsEnabled(manager.apiKey)) continue;
           if (session.cancelled || pendingUnits.length === 0) {
             break;
           }
@@ -941,7 +944,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
             continue;
           }
 
-          while (!session.cancelled && availableSlots > 0 && pendingUnits.length > 0) {
+          while (!session.cancelled && availableSlots > 0 && pendingUnits.length > 0 && accountIsEnabled(manager.apiKey)) {
             const unit = pendingUnits.shift();
             if (!unit) {
               break;
@@ -1030,7 +1033,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
                   cardId: unit.cardId,
                   parentAttemptId: cards.find(card => card.id === unit.cardId)?.sourceAttemptId,
                   name: (cards.find(card => card.id === unit.cardId)?.name || cards.find(card => card.id === unit.cardId)?.webAppInfo?.webappName || '任务') + (unit.totalUnits > 1 ? ' · '+(unit.unitIndex+1) : ''),
-                  account: apiKeys.find(entry => entry.apiKey.trim() === manager.apiKey)!,
+                  account: latestApiKeysRef.current.find(entry => entry.apiKey.trim() === manager.apiKey)!,
                 });
 
                 if (isCardCancelled(session, unit.cardId)) throw new TaskCancelledError();
@@ -1141,7 +1144,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
           break;
         }
 
-        if (capacityManagers.every(manager => unavailableKeys.has(manager.apiKey)) && runningTasks.size === 0) {
+        if (capacityManagers.every(manager => unavailableKeys.has(manager.apiKey) || !accountIsEnabled(manager.apiKey)) && runningTasks.size === 0) {
           setSessionNotice('本轮所有账号均不可用，已停止提交。配置保留，请修复账号后手动运行。'); break;
         }
         if (launchedCount > 0) {

@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 const { chromium } = await import(process.env.RH_PLAYWRIGHT_ROOT ? pathToFileURL(join(process.env.RH_PLAYWRIGHT_ROOT, 'index.mjs')).href : 'playwright');
 const profile = await mkdtemp(join(tmpdir(), 'rh-production-'));
 const launch = () => chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 1680, height: 1100 }, ...(process.env.RH_BROWSER_PATH ? { executablePath: process.env.RH_BROWSER_PATH } : {}) });
-const mock = { submitted: [], rejected: [], uploads: [], queries: [], hold: false, release: null, invalidAccount: '', failQuery: false, uncertainNext: false };
+const mock = { submitted: [], rejected: [], uploads: [], queries: [], hold: false, release: null, invalidAccount: '', failQuery: false, uncertainNext: false, runHold: false };
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFOsAAAAASUVORK5CYII=', 'base64');
 const video = process.env.RH_TEST_VIDEO ? await readFile(process.env.RH_TEST_VIDEO) : null;
 const mocks = async context => {
@@ -35,7 +35,7 @@ const mocks = async context => {
       mock.queries.push({key,host:url.hostname});
       if (mock.failQuery) return route.fulfill({status:503,body:'unavailable'});
       const taskId = JSON.parse(route.request().postData()).taskId;
-      data = url.pathname.endsWith('/v2/query') ? { taskId,status:'SUCCESS',results:[1,2].map(i=>({url:'https://result.test/'+taskId+'-'+i+'.mp4',type:'video'})) } : {code:0,data:[]};
+      data = url.pathname.endsWith('/v2/query') ? { taskId,status:mock.runHold?'RUNNING':'SUCCESS',results:[1,2].map(i=>({url:'https://result.test/'+taskId+'-'+i+'.mp4',type:'video'})) } : {code:0,data:[]};
     }
     await route.fulfill({json:data});
   });
@@ -120,7 +120,17 @@ try {
   await page.getByRole('button',{name:'撤销上次批量操作',exact:true}).click();
   await save(); workspace=await current();
   assert.equal(workspace.cards[0].nodes[0].fieldValue,'基础提示词'); assert.equal(workspace.cards.length,5);
-  console.log('通过：完整模板、含多行文本的变体、选择修改及撤销不影响其他任务');
+  await page.getByRole('button',{name:'批量修改参数',exact:true}).click();
+  await page.getByLabel('要修改的参数').selectOption('1');
+  await page.getByLabel('批量替换素材').setInputFiles({name:'shared.png',mimeType:'image/png',buffer:png});
+  await page.getByRole('button',{name:'应用修改',exact:true}).click();
+  await save();
+  assert.deepEqual(await page.evaluate(async()=>{
+    const data=await(await import('/services/workspaceStorage.ts')).readWorkspaceData('current');
+    return data.cards.slice(0,3).map(card=>card.initialPendingFiles['single|2|image'].name);
+  }),['shared.png','shared.png','reference.png']);
+  await page.getByRole('button',{name:'撤销上次批量操作',exact:true}).click();await save();
+  console.log('通过：完整模板、含多行文本的变体、选择修改与换素材，以及撤销不影响其他任务');
   await page.getByRole('button',{name:'收藏应用 / 备注名称',exact:true}).filter({visible:true}).click();
   await page.getByLabel('收藏名称',{exact:true}).fill('我的独家视频应用');
   await page.getByRole('button',{name:'保存收藏',exact:true}).click();
@@ -139,6 +149,24 @@ try {
     await poll(()=>player.evaluate(el=>el.currentTime>0),'结果视频无法播放');
     console.log('通过：真实本地测试视频解码与播放（模拟结果链接）');
   }
+  const beforeDisable=mock.submitted.length;
+  const priorDisableIds=new Set((await attempts()).map(a=>a.id));
+  await page.getByRole('button',{name:'清空选择',exact:true}).click();
+  for(const n of [1,2,3])await page.getByRole('checkbox',{name:'选择任务 '+n,exact:true}).check();
+  mock.runHold=true;
+  await page.getByRole('button',{name:'运行所选 (3)',exact:true}).click();
+  await poll(()=>mock.submitted.length===beforeDisable+2,'未启动两个并发任务');
+  await page.getByRole('button',{name:'个人中心',exact:true}).click();
+  await page.getByLabel('账号 1 参与自动调度',{exact:true}).uncheck();
+  await page.getByRole('button',{name:'保存并关闭',exact:true}).click();
+  mock.runHold=false;
+  await poll(async()=>mock.submitted.length===beforeDisable+3&&(await attempts()).filter(a=>!priorDisableIds.has(a.id)&&a.status==='completed').length===3,'停用后的剩余任务未完成');
+  assert.equal(mock.submitted.at(-1).key,'account-b','被停用账号仍领取新任务');
+  await page.getByRole('button',{name:'个人中心',exact:true}).click();
+  await page.getByLabel('账号 1 参与自动调度',{exact:true}).check();
+  await page.getByRole('button',{name:'保存并关闭',exact:true}).click();
+  await page.getByRole('button',{name:'清空选择',exact:true}).click();
+  console.log('通过：调度中停用账号立即停止领取新任务，原任务继续查询完成');
   const beforeDownload=mock.submitted.length;
   await page.evaluate(async()=>{
     window.rhSavedFiles=[]; window.rhFailDownload=true;
@@ -238,6 +266,22 @@ try {
   assert.equal((await attempts()).find(a=>a.id===queryFailed.id).status,'completed');
   assert.equal(mock.submitted.length,acceptedCount);
   console.log('通过：实际模拟提交缺少编号进入待确认，接受后查询失败只恢复查询，未额外提交');
+  // Different AI applications share the same queue without mixing their IDs or inputs.
+  await page.getByRole('button',{name:'清空选择',exact:true}).click();
+  await page.getByRole('checkbox',{name:'选择任务 1',exact:true}).check();
+  await page.getByRole('button',{name:'新建任务',exact:true}).click();
+  await page.getByRole('button',{name:'创建空白卡片',exact:true}).click();
+  await page.getByPlaceholder('请输入 WebApp ID，或粘贴应用详情页链接').filter({visible:true}).fill('654321');
+  await page.getByRole('button',{name:'加载',exact:true}).filter({visible:true}).click();
+  await page.getByPlaceholder('请输入文本...').filter({visible:true}).fill('第二应用提示词');
+  await page.getByRole('checkbox',{name:'选择任务 6',exact:true}).check();
+  const beforeDifferent=mock.submitted.length;
+  const priorDifferentIds=new Set((await attempts()).map(a=>a.id));
+  await page.getByRole('button',{name:'运行所选 (2)',exact:true}).click();
+  await poll(async()=>mock.submitted.length===beforeDifferent+2&&(await attempts()).filter(a=>!priorDifferentIds.has(a.id)&&a.status==='completed').length===2,'不同应用并发未完成');
+  assert.deepEqual(new Set(mock.submitted.slice(beforeDifferent).map(item=>item.body.webappId)),new Set(['123456','654321']));
+  assert.equal(mock.submitted.slice(beforeDifferent).find(item=>item.body.webappId==='654321').body.nodeInfoList[0].fieldValue,'第二应用提示词');
+  console.log('通过：不同应用在同一并发队列执行，应用 ID 与各自参数没有串用');
   // A failed durable write must prevent the network submission altogether.
   const beforeFailure=mock.submitted.length;
   const failure=await page.evaluate(async base=>{
@@ -250,6 +294,8 @@ try {
   assert.equal(failure,true);assert.equal(mock.submitted.length,beforeFailure);
   await page.getByRole('button',{name:'生成记录',exact:true}).click();
   const article=page.locator('article').filter({hasText:queryFailed.taskId});
+  await article.getByRole('button',{name:'标记采用',exact:true}).click();
+  await poll(async()=>(await attempts()).find(a=>a.id===queryFailed.id)?.decision==='adopted','结果采用标记未保存');
   await article.getByRole('button',{name:'按此输入准备新任务',exact:true}).click();
   await save();
   const restored=await current();
