@@ -183,3 +183,16 @@ test('API node loading normalizes COMBO type without losing field data', async (
   assert.equal(result.nodes[0].fieldType, 'LIST');
   assert.deepEqual(api.parseListOptions(result.nodes[0]).map(item => item.index), ['match', 'max']);
 });
+
+test('task input provenance includes only effective files; row overrides shared sources', () => {
+  const nodes = [{ nodeId: '1', fieldName: 'image', fieldType: 'IMAGE', fieldValue: '', _taskId: 'row-a' }, { nodeId: '2', fieldName: 'audio', fieldType: 'AUDIO', fieldValue: '', _taskId: 'row-a' }];
+  const shared = new File(['base'], 'base.png');
+  const override = new File(['variant'], 'variant.png');
+  const sound = new File(['sound'], 'sound.wav');
+  const selected = api.selectPendingFilesForTask(nodes, {
+    'single|1|image': shared, 'row-a|1|image': override,
+    'row-b|1|image': new File(['other'], 'other.png'), 'single|2|audio': sound,
+  });
+  assert.deepEqual(Object.keys(selected).sort(), ['row-a|1|image', 'single|2|audio']);
+  assert.equal(selected['row-a|1|image'], override);
+});

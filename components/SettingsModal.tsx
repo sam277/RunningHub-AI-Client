@@ -144,7 +144,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const latestSettings = useRef({ entries, enterpriseEntry, saveApiKeyEnabled });
   latestSettings.current = { entries, enterpriseEntry, saveApiKeyEnabled };
   const configuredEntries = entries.filter(entry => entry.apiKey.trim());
-  const totalConsumerConcurrency = configuredEntries.reduce((sum, entry) => sum + (entry.concurrency || 1), 0);
+  const totalConsumerConcurrency = configuredEntries.filter(entry => entry.enabled !== false).reduce((sum, entry) => sum + (entry.concurrency || 1), 0);
 
   const handleRegionModeChange = (mode: RunningHubRegionMode) => {
     setRegionMode(mode);
@@ -371,6 +371,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                           aria-label={`账号 ${index + 1} API Key`}
                         />
                       </div>
+                      <label className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                        <input type="checkbox" checked={entry.enabled !== false} aria-label={`账号 ${index+1} 参与自动调度`} onChange={event => updateEntry(entry.id, current => ({ ...current, enabled: event.target.checked }))} />
+                        参与新任务自动调度（停用后仍可查询已有任务）
+                      </label>
                       <label className="mt-3 block text-xs text-slate-500 dark:text-slate-400">
                         备注 / 邮箱
                         <input type="text" value={entry.note || ''}

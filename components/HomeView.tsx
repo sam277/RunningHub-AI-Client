@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import AppLibraryEditor from './AppLibraryEditor';
 import FavoritesView from './FavoritesView';
 import { Globe, RefreshCw, Heart, MousePointerClick, Star, Play, Loader2, User, Search, X } from 'lucide-react';
 import { NodeInfo, WebAppInfo, Favorite, HomeDefaultTab } from '../types';
@@ -20,6 +21,7 @@ interface HomeViewProps {
 }
 
 const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, apiKeys, onUpdateFavorites, onToggleFavorite, defaultTab, resetToken }) => {
+    const [editingFavorite, setEditingFavorite] = useState<Favorite | null>(null);
     const [activeTab, setActiveTab] = useState<HomeDefaultTab>(defaultTab);
 
     const [directAppInput, setDirectAppInput] = useState('');
@@ -125,11 +127,13 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, apiKeys, on
 
     return (
         <div className="flex-1 flex flex-col bg-slate-50 dark:bg-[#0F1115] overflow-auto p-6">
+            {editingFavorite && <AppLibraryEditor initial={editingFavorite} favorites={favorites} onSave={onUpdateFavorites} onClose={() => setEditingFavorite(null)} />}
             <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-[#161920]">
                 <span className="text-sm font-medium">通过 ID / 链接打开应用</span>
                 <input value={directAppInput} onChange={event => setDirectAppInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') openDirectApp(); }}
                     aria-label="应用 ID 或链接" placeholder="粘贴 RunningHub 应用 ID 或详情页链接"
                     className="min-w-48 flex-1 rounded-lg border border-slate-200 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <button onClick={() => setEditingFavorite({ webappId: directAppInput, name: '' })} className="rounded-lg border border-slate-500 px-4 py-2 text-sm">按 ID 收藏</button>
                 <button onClick={openDirectApp} disabled={!directAppInput.trim()} className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white disabled:opacity-50">添加到多任务</button>
             </div>
             {loadError && activeTab === 'official' && <div role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">{loadError}</div>}
@@ -356,7 +360,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onSelectApp, favorites, apiKeys, on
                         )}
                     </div>
                 ) : (
-                    <FavoritesView favorites={favorites} apiKeys={apiKeys} onUpdateFavorites={onUpdateFavorites}
+                    <FavoritesView onRename={setEditingFavorite} favorites={favorites} apiKeys={apiKeys} onUpdateFavorites={onUpdateFavorites}
                         onSelectApp={fav => onSelectApp(fav.webappId, fav.appInfo && fav.nodes?.length ? { nodes: fav.nodes, appInfo: fav.appInfo } : undefined)} />
                 )}
             </div>

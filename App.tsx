@@ -48,6 +48,7 @@ const normalizeApiKeyEntry = (entry?: Partial<ApiKeyEntry> | null): ApiKeyEntry 
     id: entry?.id || crypto.randomUUID(),
     apiKey: typeof entry?.apiKey === 'string' ? entry.apiKey : '',
     note: typeof entry?.note === 'string' ? entry.note : '',
+    enabled: entry?.enabled !== false,
     concurrency: Number.isFinite(normalizedConcurrency) && normalizedConcurrency > 0
       ? Math.floor(normalizedConcurrency)
       : 1,
@@ -555,7 +556,8 @@ function App() {
           </div>
 
           <div className={`flex-1 overflow-hidden ${currentView === 'multitask' ? 'flex' : 'hidden'}`}>
-            <MultiTaskView 
+            <MultiTaskView
+              onUpdateFavorites={handleUpdateFavorites}
               apiKeys={apiKeys}
               autoSaveConfig={autoSaveConfig}
               recentApps={recentApps}

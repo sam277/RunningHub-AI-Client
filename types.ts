@@ -129,6 +129,7 @@ export interface ApiKeyEntry {
   id: string;
   apiKey: string;
   note?: string;
+  enabled?: boolean;
   concurrency?: number;
   accountInfo?: AccountInfo | null;
   apiInfo?: ApiInfo | null;

@@ -459,7 +459,8 @@ export async function saveFileFromUrl(
   url: string,
   filename?: string,
   extension?: string,
-  sequential?: boolean
+  sequential?: boolean,
+  onSaved?: (receipt: { filename: string; path: string }) => void,
 ): Promise<boolean> {
   if (!directoryHandle) {
     throw new Error('未选择保存目录');
@@ -515,6 +516,7 @@ export async function saveFileFromUrl(
         filename: finalFilename
       });
       
+      onSaved?.({ filename: finalFilename, path: savedPath });
       console.log(`[AutoSave] Tauri saved successfully: ${savedPath}`);
       return true;
     } catch (e) {
@@ -593,6 +595,7 @@ export async function saveFileFromUrl(
         data: bytes,
       });
 
+      onSaved?.({ filename: finalFilename, path: savedPath });
       console.log(`[AutoSave] Tauri binary saved successfully: ${savedPath}`);
       return true;
     } catch (e) {
@@ -605,6 +608,7 @@ export async function saveFileFromUrl(
   const success = await saveBinaryFile(directoryHandle, finalFilename, blob);
   
   if (success) {
+    onSaved?.({ filename: finalFilename, path: (getCurrentDirectoryPath() || getDirectoryName() || '') + '/' + finalFilename });
     console.log(`[AutoSave] Saved: ${finalFilename}`);
   } else {
     throw new Error('保存文件失败');

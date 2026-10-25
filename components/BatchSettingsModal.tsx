@@ -51,7 +51,7 @@ const BatchSettingsModal: React.FC<BatchSettingsModalProps> = ({
         const previews: Record<string, string> = {};
 
         Object.entries(files).forEach(([key, file]) => {
-            if (file?.type?.startsWith('image/')) {
+            if (file instanceof Blob && file.type?.startsWith('image/')) {
                 previews[key] = URL.createObjectURL(file);
             }
         });

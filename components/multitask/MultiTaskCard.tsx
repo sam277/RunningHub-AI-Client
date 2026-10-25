@@ -48,6 +48,8 @@ export interface MultiTaskCardData {
   id: string;
   name?: string;
   webappId: string;
+  loadedAppId?: string;
+  sourceAttemptId?: string;
   webAppInfo: WebAppInfo | null;
   nodes: NodeInfo[];
   isConnected: boolean;
@@ -68,6 +70,9 @@ interface MultiTaskCardProps {
   editorRef: React.Ref<StepEditorRef>;
   onSnapshotChange?: () => void;
   onNameChange: (name: string) => void;
+  onFavorite: () => void;
+  onSaveTemplate: () => void;
+  onVariants: () => void;
   detailView?: boolean;
   isBusy: boolean;
   onRunOptionsChange: (cardId: string, options: WorkflowRunOptions) => void;
@@ -203,6 +208,9 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   onSnapshotChange,
   detailView,
   onNameChange,
+  onFavorite,
+  onSaveTemplate,
+  onVariants,
 }) => {
   const [inputValue, setInputValue] = useState(card.webappId);
   const [activeOutputIndex, setActiveOutputIndex] = useState(0);
@@ -296,6 +304,12 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
           </div>
         </div>
 
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-brand-600">
+          <button disabled={!card.webappId} onClick={onFavorite}>收藏应用 / 备注名称</button>
+          <button disabled={!card.isConnected} onClick={onSaveTemplate}>保存为模板</button>
+          <button disabled={!card.isConnected || isBusy} onClick={onVariants}>生成提示词变体</button>
+          <span className="text-slate-500">复制包含当前全部输入；再次运行会新增生成记录。</span>
+        </div>
         <input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
           disabled={isBusy} onChange={event => onNameChange(event.target.value)}
           className="mt-3 w-full rounded-lg border border-slate-200 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
@@ -327,6 +341,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
           </button>
         </div>
 
+        {!card.isConnected && card.nodes.length > 0 && <p className="mt-2 text-xs text-amber-600">已保留原配置，加载成功后才切换应用。输回原应用 ID 可继续使用。</p>}
         <details className="mt-3 text-xs text-slate-500 dark:text-slate-400">
           <summary className="cursor-pointer">应用运行选项</summary>
           <div className="mt-2 grid gap-2">
@@ -369,6 +384,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
 
       <div className="relative flex-1 min-h-0">
         <StepEditor
+          runLabel={['success','failed','cancelled'].includes(card.run.status) ? '再生成一次' : '运行'}
           onSnapshotChange={onSnapshotChange}
           key={card.editorRevision}
           initialPendingFiles={card.initialPendingFiles}

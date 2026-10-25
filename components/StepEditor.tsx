@@ -24,6 +24,7 @@ interface StepEditorProps {
     initialPendingFiles?: PendingFilesMap;
     mode?: 'app' | 'standard';
     standardModelConfig?: StandardModelConfig;
+    runLabel?: string;
     onSnapshotChange?: () => void;
 }
 
@@ -85,7 +86,7 @@ const hasSameNodeStructure = (left: NodeInfo[], right: NodeInfo[]) => {
     });
 };
 
-const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange }, ref) => {
+const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange, runLabel }, ref) => {
     const editorDomId = useId().replace(/:/g, '-');
     const [localNodes, setLocalNodes] = useState<NodeInfo[]>(() => nodes.map(node => ({ ...node })));
     const uploadRequestsRef = useRef(new Map<string, symbol>());
@@ -178,6 +179,21 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
         };
     }, [initialBatchList, initialBatchTaskName, initialPendingFiles, nodes]);
 
+    // Restore local media previews from immutable originals after copy/template/restart.
+    useEffect(() => {
+        const urls: Record<string, string> = {};
+        localNodes.forEach((node, index) => {
+            const file = pendingFiles[`single|${node.nodeId}|${node.fieldName}`];
+            if (file instanceof Blob) urls[node.nodeId + '_' + index] = URL.createObjectURL(file);
+            else if (file) setErrors(previous => ({ ...previous, [node.nodeId + '_' + index]: '本地素材原件不可用，请重新选择文件。' }));
+        });
+        setPreviews(previous => {
+            Object.values(previous).forEach(url => URL.revokeObjectURL(url as string));
+            return urls;
+        });
+        return () => Object.values(urls).forEach(url => URL.revokeObjectURL(url));
+    }, [pendingFiles]);
+
     // Cleanup object URLs to avoid memory leaks
     useEffect(() => {
         return () => {
@@ -262,6 +278,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
 
         // Clear the field value
         uploadRequestsRef.current.delete(key);
+        setPendingFiles(prev => { const next = { ...prev }; delete next[`single|${node.nodeId}|${node.fieldName}`]; return next; });
         setUploadingState(prev => ({ ...prev, [key]: false }));
         handleTextChange(index, '');
 
@@ -310,6 +327,8 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
             URL.revokeObjectURL(previews[key]);
         }
 
+        setPendingFiles(prev => ({ ...prev, [`single|${node.nodeId}|${node.fieldName}`]: file }));
+        setLocalNodes(previous => previous.map((current, i) => i === index ? { ...current, fieldValue: file.name } : current));
         // 1. Create local preview for uploaded media so it can be previewed immediately.
         const url = URL.createObjectURL(file);
         setPreviews(prev => ({ ...prev, [key]: url }));
@@ -875,13 +894,13 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
 
     const handleBatchRun = () => {
         if (mode === 'standard') {
-            onRun(localNodes, undefined, undefined, undefined, instanceType);
+            onRun(localNodes, undefined, pendingFiles, undefined, instanceType);
             return;
         }
 
         if (batchList.length === 0) {
             // Fallback to normal run if no batch list
-            onRun(localNodes, undefined, undefined, undefined, instanceType);
+            onRun(localNodes, undefined, pendingFiles, undefined, instanceType);
             return;
         }
 
@@ -1066,7 +1085,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                     </button>
                 ) : (
                     <button
-                        onClick={() => onRun(localNodes, undefined, undefined, undefined, instanceType)}
+                        onClick={() => onRun(localNodes, undefined, pendingFiles, undefined, instanceType)}
                         disabled={!isConnected || hasUploadingFiles || runType === 'batch'}
                         className="flex-1 flex justify-center items-center gap-2 bg-gradient-to-r from-brand-500 to-brand-600 hover:from-brand-600 hover:to-brand-700 text-white font-semibold py-3 px-5 rounded-lg shadow-md shadow-brand-200 dark:shadow-brand-900/20 transform hover:-translate-y-0.5 transition-all disabled:opacity-50 disabled:transform-none disabled:shadow-none text-sm"
                     >
@@ -1077,7 +1096,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                                 ? `${runType === 'single' ? '继续提交' : '运行'} · ${modelPricePreviewLabel}`
                                 : mode === 'standard' && runType === 'single'
                                     ? '继续提交'
-                                    : '运行'}
+                                    : (runLabel || '运行')}
                     </button>
                 )}
 

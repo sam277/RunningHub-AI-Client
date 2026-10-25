@@ -495,8 +495,8 @@ export interface QueryTaskResponse extends ApiResponse<TaskOutput[] | any> {
   promptTips?: PromptTips | string | null;
 }
 
-export const queryTaskResultV2 = async (apiKey: string, taskId: string): Promise<QueryTaskResultV2> => {
-  const region = await resolveRunningHubRegion(apiKey);
+export const queryTaskResultV2 = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResultV2> => {
+  const region = resolvedRegion || await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/openapi/v2/query`;
   const response = await fetch(url, {
     method: 'POST',
@@ -525,8 +525,8 @@ export const queryTaskResultV2 = async (apiKey: string, taskId: string): Promise
   };
 };
 
-export const queryTaskOutputs = async (apiKey: string, taskId: string): Promise<QueryTaskResponse> => {
-  const region = await resolveRunningHubRegion(apiKey);
+export const queryTaskOutputs = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResponse> => {
+  const region = resolvedRegion || await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/task/openapi/outputs`;
 
   const response = await fetch(url, {
@@ -571,13 +571,13 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string): Promise<
   };
 };
 
-export const queryTaskResult = async (apiKey: string, taskId: string): Promise<QueryTaskResultV2> => {
+export const queryTaskResult = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResultV2> => {
   try {
-    const v2Result = await queryTaskResultV2(apiKey, taskId);
+    const v2Result = await queryTaskResultV2(apiKey, taskId, resolvedRegion);
 
     if (v2Result.status === 'SUCCESS' || v2Result.status === 'FAILED') {
       try {
-        const legacyResult = await queryTaskOutputs(apiKey, taskId);
+        const legacyResult = await queryTaskOutputs(apiKey, taskId, resolvedRegion);
         return {
           ...v2Result,
           results: v2Result.results.length > 0 ? v2Result.results : normalizeTaskOutputs(legacyResult.data as any[]),
@@ -591,7 +591,7 @@ export const queryTaskResult = async (apiKey: string, taskId: string): Promise<Q
 
     return v2Result;
   } catch {
-    const legacyResult = await queryTaskOutputs(apiKey, taskId);
+    const legacyResult = await queryTaskOutputs(apiKey, taskId, resolvedRegion);
     return {
       taskId,
       status: legacyResult.status || 'FAILED',

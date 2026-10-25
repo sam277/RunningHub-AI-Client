@@ -5,6 +5,7 @@ import { getNodeList } from '../services/api';
 
 interface FavoritesViewProps {
     favorites: Favorite[];
+    onRename?: (favorite: Favorite) => void;
     onSelectApp: (favorite: Favorite) => void;
     apiKeys: string[];
     onUpdateFavorites: (favorites: Favorite[]) => void;
@@ -30,7 +31,7 @@ const Toast = ({ message, type, onClose }: { message: string, type: 'success' | 
     );
 };
 
-const FavoritesView: React.FC<FavoritesViewProps> = ({ favorites, onSelectApp, apiKeys, onUpdateFavorites }) => {
+const FavoritesView: React.FC<FavoritesViewProps> = ({ favorites, onSelectApp, apiKeys, onUpdateFavorites, onRename }) => {
     const [isSyncing, setIsSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState(0);
     const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -206,6 +207,7 @@ const FavoritesView: React.FC<FavoritesViewProps> = ({ favorites, onSelectApp, a
                                 key={fav.webappId}
                                 className="group relative flex flex-col bg-white dark:bg-[#1a1d24] rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-xl hover:border-brand-300 dark:hover:border-brand-700 transition-all duration-300 overflow-hidden"
                             >
+                                {onRename && <button onClick={() => onRename(fav)} className="z-10 px-3 py-2 text-left text-xs text-brand-600">修改收藏名称</button>}
                                 {/* Card Image Area - 3:4 Aspect Ratio */}
                                 <div className="relative aspect-[3/4] bg-slate-100 dark:bg-[#252830] overflow-hidden">
                                     {info?.covers?.[0]?.thumbnailUri ? (
@@ -283,7 +285,7 @@ const FavoritesView: React.FC<FavoritesViewProps> = ({ favorites, onSelectApp, a
                 <div className="flex flex-col items-center justify-center py-20 text-slate-400 dark:text-slate-600">
                     <Star className="w-16 h-16 mb-4 opacity-20" />
                     <p className="text-lg">暂无收藏</p>
-                    <p className="text-sm mt-2">在首页点击卡片右上角的星星即可收藏</p>
+                    <p className="text-sm mt-2">可以直接通过应用 ID / 详情页链接收藏，无需在商城中找到它</p>
                 </div>
             )}
         </div>

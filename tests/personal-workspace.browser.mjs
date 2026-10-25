@@ -47,7 +47,7 @@ const installMocks = async ctx => {
 };
 const waitSaved = () => page.getByText(/工作区已自动保存 ·/).waitFor();
 const readCurrent = () => page.evaluate(() => new Promise((resolve, reject) => {
-  const open = indexedDB.open('rh-workspaces', 1);
+  const open = indexedDB.open('rh-workspaces');
   open.onerror = () => reject(open.error);
   open.onsuccess = () => {
     const db = open.result;
@@ -167,6 +167,7 @@ try {
   assert.equal(submissions.length, 0, 'Restoring workspaces must never submit paid tasks');
   // Exercise the existing scheduler with restored Files and verify account notes in logs.
   await page.getByRole('button', { name: '全部运行', exact: true }).click();
+  await page.getByRole('button', { name: '停止追踪', exact: true }).waitFor();
   await page.getByRole('button', { name: '全部运行', exact: true }).waitFor();
   assert.equal(submissions.length, 3);
   await page.getByText(/调度到 account-a@example.com/).first().waitFor();
