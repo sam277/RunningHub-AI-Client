@@ -256,11 +256,11 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
       }
       setStorageReady(true);
       setSaveStatus(workspace ? '已恢复上次工作区，任务需手动运行' : '工作区自动保存已就绪');
-    }).catch(() => {
+    }).catch((error) => {
       if (!active) return;
       setStorageFailed(true);
       setStorageReady(true);
-      setSaveStatus('本地读取失败，自动保存已暂停。请重新打开应用重试，避免覆盖旧工作区。');
+      setSaveStatus('本地读取失败，自动保存已暂停，避免覆盖旧工作区。' + (error instanceof Error ? error.message : '请重新打开应用重试。'));
     });
     return () => { active = false; };
   }, []);

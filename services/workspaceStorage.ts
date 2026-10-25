@@ -6,16 +6,28 @@ const writes = new Map<string, Promise<void>>();
 const openDatabase = () => {
   if (!database) database = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open('rh-workspaces', 2);
+    let settled = false;
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const timer = setTimeout(() => fail(new Error('本地数据库打开超时，请换用支持 IndexedDB 的浏览器后重试。')), 10000);
     request.onupgradeneeded = () => {
+      if (settled) { request.transaction?.abort(); return; }
       if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
       if (!request.result.objectStoreNames.contains('assets')) request.result.createObjectStore('assets');
     };
     request.onsuccess = () => {
+      if (settled) { request.result.close(); return; }
+      settled = true;
+      clearTimeout(timer);
       request.result.onversionchange = () => { request.result.close(); database = undefined; };
       resolve(request.result);
     };
-    request.onerror = () => reject(request.error);
-    request.onblocked = () => reject(new Error('请关闭旧窗口后重试本地存储。'));
+    request.onerror = () => fail(request.error);
+    request.onblocked = () => fail(new Error('请关闭旧窗口后重试本地存储。'));
   }).catch(error => { database = undefined; throw error; });
   return database;
 };
@@ -118,3 +130,5 @@ export function patchWorkspaceFields(key: string, fields: Record<string, unknown
   void operation.finally(() => { if (writes.get(key) === operation) writes.delete(key); }).catch(() => {});
   return operation.then(() => found);
 }
+
+
