@@ -110,3 +110,63 @@ button { touch-action:manipulation; }
 @media(min-width:1251px){.workbench-center-slot .editor-body{grid-template-columns:minmax(0,var(--media-fr,.83fr)) minmax(0,1fr);grid-template-areas:'short short' 'media text'}}
 @media(max-width:900px){.resizable-layout{grid-template-columns:minmax(24px,min(var(--nav-width),20%)) 4px minmax(0,1fr) 4px minmax(24px,min(var(--record-width),30%))}.account-transfer{grid-template-columns:1fr}.account-entry-form input{min-width:160px}}
 @media(max-width:700px){.workbench-layout-controls span{display:none}.resizable-layout{display:flex;flex-direction:column;overflow:auto}.workbench-nav-slot,.workbench-record-slot{flex-shrink:0;overflow:visible;max-height:250px}.workbench-center-slot{flex-shrink:0;min-height:620px}.workbench-resizer{display:none}.resizable-workbench[data-left-open=false] .workbench-nav-slot,.resizable-workbench[data-right-open=false] .workbench-record-slot{height:24px}.pane-rail{width:100%;height:24px}.account-entry-form{max-height:230px;overflow:auto}}
+
+.production-center { display:flex;flex:1;flex-direction:column;min-height:0;min-width:0;overflow:hidden; }
+.production-center>.task-editing-area { flex:1;min-height:0; }
+.production-center>[hidden] { display:none!important; }
+.historical-task-message { display:flex;flex:1;align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:24px;font-size:13px;color:#64748b; }
+.historical-task-message button { color:#0a8768; }
+.task-nav-row[data-task-focused=true]>button:first-of-type { border-color:#d5a300!important;box-shadow:inset 0 0 0 1px #d5a300; }
+.task-surface[data-task-focused=true]>.rounded-lg,.task-surface[data-task-focused=true] .production-task { border-color:#d5a300!important;box-shadow:inset 0 0 0 1px #d5a300; }
+.production-batch-grid tr[data-task-focused=true] td { background:#fef6d4;border-top:1px solid #d5a300;border-bottom:1px solid #d5a300; }
+.production-batch-grid tr[data-task-focused=true] td:first-child { border-left:2px solid #d5a300; }
+.production-batch-grid tr[data-task-focused=true] td:last-child { border-right:2px solid #d5a300; }
+.dark .production-batch-grid tr[data-task-focused=true] td { background:#343020; }
+.production-record { margin-bottom:7px;border:1px solid #cbd5e1;border-radius:7px;background:white;padding:8px;font-size:12px; }
+.dark .production-record { border-color:#334155;background:#161920; }
+.production-record[data-task-focused=true] { border-color:#d5a300;box-shadow:inset 0 0 0 1px #d5a300; }
+.production-record[data-attempt-selected=true] { background:#fff9e6; }
+.dark .production-record[data-attempt-selected=true] { background:#2a291e; }
+.record-summary { width:100%;text-align:left;min-width:0;display:block; }
+.record-metrics { display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:#64748b; }
+.dark .record-metrics { color:#94a3b8; }
+.record-metrics time { font-size:10px;white-space:nowrap; }
+.record-actions { display:flex;align-items:center;gap:10px;margin-top:7px;font-size:11px; }
+.record-actions button { display:inline-flex;align-items:center;gap:3px;white-space:nowrap;padding:2px 0;color:#0c8767; }
+.dark .record-actions button { color:#b7c9d4; }
+.record-actions button:disabled { opacity:.4; }
+.record-details { margin-top:9px;padding-top:9px;border-top:1px solid #cbd5e1;display:grid;gap:10px;overflow-wrap:anywhere;font-size:11px; }
+.dark .record-details { border-color:#334155; }
+.task-log-panel { border:1px solid #d5a300;border-radius:6px;margin:4px; }
+.result-preview { flex-shrink:0;min-width:0;border:1px solid #cbd5e1;border-radius:7px;margin:0 8px 7px;overflow:hidden;background:#f1f5f9; }
+.result-preview[data-task-focused=true] { border-color:#d5a300; }
+.dark .result-preview { background:#141b22; }
+.result-preview.preview-expanded { display:flex;flex-direction:column;height:min(var(--result-preview-height,220px),40vh);min-height:150px; }
+.preview-header { display:flex;align-items:center;gap:10px;padding:5px 9px;font-size:11px;flex-shrink:0;min-width:0; }
+.preview-header>button:first-child { max-width:48%; }
+.preview-record-picker { min-width:0;max-width:45%;background:transparent;border:1px solid #94a3b8;border-radius:4px;padding:2px 3px;font-size:11px; }
+.preview-body { display:flex;min-height:0;flex:1;border-top:1px solid #cbd5e1; }
+.dark .preview-body { border-color:#334155; }
+.preview-player { display:flex;flex:1;min-height:0;min-width:0;align-items:center;justify-content:center;background:#080b10;color:#cbd5e1; }
+.preview-player>video,.preview-player>img { display:block;width:100%;height:100%;object-fit:contain;min-height:0; }
+.preview-player>audio { max-width:95%; }
+.preview-files { display:flex;flex-direction:column;gap:5px;padding:5px;width:85px;flex-shrink:0;overflow:auto; }
+.preview-files button { min-height:38px;flex-shrink:0;border:1px solid #64748b;border-radius:4px;font-size:11px; }
+.preview-files img { height:44px;width:100%;object-fit:contain; }
+.preview-files .active-preview-file { border-color:#d5a300;background:#655321;color:white; }
+.preview-resizer { height:5px;flex-shrink:0;background:#b8c6d4;cursor:row-resize;touch-action:none; }
+.dark .preview-resizer { background:#37434e; }
+.preview-resizer:hover,.preview-resizer:focus { background:#d5a300; }
+.result-preview:fullscreen { margin:0;border-radius:0;height:100vh!important;max-height:100vh;width:100vw; }
+.result-preview:fullscreen .preview-body { flex:1; }
+@media(max-width:700px){.result-preview.preview-expanded{height:230px}.preview-header{gap:5px}.preview-header>button:first-child{max-width:40%}.record-actions{gap:8px}}
+@media(min-width:701px) and (max-height:850px){
+  .result-preview.preview-expanded { height:min(var(--result-preview-height,220px),23vh); }
+  .production-center:has(.preview-expanded) .production-task-header { padding:6px 10px; }
+  .production-center:has(.preview-expanded) .production-task-header>details { display:inline-block;margin-top:5px;margin-right:14px; }
+  .production-center:has(.preview-expanded) .production-task-header>details[open] { display:block; }
+  .production-center:has(.preview-expanded) .editor-overview { flex-wrap:nowrap;overflow-x:auto;padding:4px 10px;max-height:40px; }
+  .production-center:has(.preview-expanded) .editor-overview button { flex-shrink:0; }
+  .production-center:has(.preview-expanded) .editor-heading { padding:5px 10px; }
+  .production-center:has(.preview-expanded) .editor-actions { padding:5px 10px; }
+}

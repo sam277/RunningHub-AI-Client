@@ -1,3 +1,4 @@
+import { revealInExplorer } from './reveal-file.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createCipheriv, createDecipheriv, createHash, randomUUID } from 'node:crypto';
 import { promises as fs, createReadStream, createWriteStream, existsSync } from 'node:fs';
@@ -110,6 +111,6 @@ restored.prepare("UPDATE meta SET value=? WHERE key='sequence_batch'").run(chose
 restored.prepare("UPDATE meta SET value=? WHERE key='batch_sequence'").run(Math.max(chosenBatch===currentNumbering.sequenceBatch?currentNumbering.displaySequence:0,chosenBatch===restoredBatch?restoredNumber:0));
 for(const row of db.prepare("SELECT * FROM sequence_reservations").all())restored.prepare("INSERT OR REPLACE INTO sequence_reservations VALUES(?,?,?,?)").run(row.key,row.sequence,row.batch,row.number);
 const maxSequence=Number(db.prepare("SELECT value FROM meta WHERE key='sequence'").get().value);restored.prepare("UPDATE meta SET value=max(value,?) WHERE key='sequence'").run(maxSequence);}finally{restored.close();}for(const f of manifest.files.filter(f=>/^(assets|results)\//.test(f.path))){const destination=join(root,...f.path.split('/'));try{await fs.copyFile(join(folder,...f.path.split('/')),destination,1);}catch(error){if(error.code!=='EEXIST')throw error;await plainFile(destination);if(await hashFile(destination)!==f.sha256)throw new Error('现有同名文件不同，恢复已停止；恢复前备份：'+before.id);}}await atomicJSON(pointer,{file:newName});db.close();dbName=newName;db=connect(dbName);await relinkResults();return {ok:true,beforeBackup:before.id};}),
-    reveal:async path=>{const target=resolve(path||root),realRoot=await fs.realpath(root),actual=await fs.realpath(target);if(actual!==realRoot&&!actual.startsWith(realRoot+sep))throw new Error('只能定位当前数据目录内的文件');if(process.platform!=='win32')throw new Error('定位功能当前支持 Windows');const stat=await fs.stat(actual),child=spawn('explorer.exe',stat.isDirectory()?[actual]:['/select,',actual],{windowsHide:true,detached:true,stdio:'ignore'});child.on('error',()=>{});child.unref();return {ok:true};},
+    reveal:async path=>{const target=resolve(path||root),realRoot=await fs.realpath(root),actual=await fs.realpath(target);if(actual!==realRoot&&!actual.startsWith(realRoot+sep))throw new Error('只能定位当前数据目录内的文件');if(process.platform!=='win32')throw new Error('定位功能当前支持 Windows');const stat=await fs.stat(actual);return (options.revealPath||revealInExplorer)(actual,stat.isDirectory());},
   };
 }

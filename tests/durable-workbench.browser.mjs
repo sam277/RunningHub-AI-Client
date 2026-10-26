@@ -10,6 +10,7 @@ const { chromium }=await import(pathToFileURL(join(process.env.RH_PLAYWRIGHT_ROO
 const root=await fs.mkdtemp(join(tmpdir(),'rh-workbench-')),dataDir=join(root,'data'),configDir=join(root,'config');await fs.mkdir(configDir);
 const portServer=createServer();await new Promise(resolve=>portServer.listen(0,'127.0.0.1',resolve));const port=portServer.address().port;await new Promise(resolve=>portServer.close(resolve));const base='http://127.0.0.1:'+port;
 const video=await fs.readFile('.browser-test-output/preview-fixture.mp4');
+const wav=Buffer.alloc(44+16000);wav.write('RIFF');wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(8000,24);wav.writeUInt32LE(16000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(16000,40);
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFOsAAAAASUVORK5CYII=','base64');
 let server,context,page,serverLog='';const submitted=[],errors=[];const queries=new Map();
 const poll=async(fn,message,ms=20000)=>{const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error(message);};
@@ -23,7 +24,7 @@ const nodes=id=>(id==='222'?[{nodeId:'1',fieldName:'prompt',fieldType:'STRING',f
 ]).map(node=>({...node,description:node.nodeName}));
 async function browser(profile){
   const ctx=await chromium.launchPersistentContext(profile,{headless:true,viewport:{width:1920,height:1080},executablePath:process.env.RH_BROWSER_PATH||'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'});
-  await ctx.route('**/*',async route=>{const url=new URL(route.request().url());if(url.hostname==='result.test')return route.fulfill({body:video,contentType:'video/mp4'});if(!url.hostname.includes('runninghub.'))return route.continue();let key=route.request().headers().authorization?.replace('Bearer ','')||'';if(!key){try{key=JSON.parse(route.request().postData()||'{}').apiKey||'';}catch{}}if(key==='broken-key')return route.fulfill({status:401,json:{code:401,msg:'Invalid API key'}});let result={code:0,data:{}};
+  await ctx.route('**/*',async route=>{const url=new URL(route.request().url());if(url.hostname==='result.test')return route.fulfill({body:url.pathname.endsWith('.png')?png:url.pathname.endsWith('.wav')?wav:video,contentType:url.pathname.endsWith('.png')?'image/png':url.pathname.endsWith('.wav')?'audio/wav':'video/mp4'});if(!url.hostname.includes('runninghub.'))return route.continue();let key=route.request().headers().authorization?.replace('Bearer ','')||'';if(!key){try{key=JSON.parse(route.request().postData()||'{}').apiKey||'';}catch{}}if(key==='broken-key')return route.fulfill({status:401,json:{code:401,msg:'Invalid API key'}});let result={code:0,data:{}};
     if(url.pathname.endsWith('/apiCallDemo'))result.data={webappName:url.searchParams.get('webappId')==='222'?'混合参数应用':'H3 测试应用',nodeInfoList:nodes(url.searchParams.get('webappId'))};
     else if(url.pathname.endsWith('/queue/status'))result.data={concurrentLimit:1,runningCount:0,queuedCount:0};
     else if(url.pathname.endsWith('/accountStatus'))result.data={remainCoins:'999',currentTaskCounts:'0',remainMoney:null,apiType:'消费级'};
@@ -107,7 +108,7 @@ try{
   assert.equal((await workspace()).cards[2].name,'对照重命名');assert.equal(submitted.length,3,'restore must not submit new generations');
   const cdp=await context.newCDPSession(page);await cdp.send('Storage.clearDataForOrigin',{origin:base,storageTypes:'all'});await page.reload();await page.getByRole('button',{name:'我的 H3',exact:true}).waitFor();assert.equal((await snapshots()).length,3);await page.getByRole('button',{name:'个人中心',exact:true}).click();await page.getByText('a@example.test',{exact:true}).first().waitFor();await page.getByRole('button',{name:'保存并关闭',exact:true}).click();
   await context.close();context=null;await stop();await start();context=await browser(join(root,'fresh-profile'));page=context.pages()[0];await page.goto(base);await page.getByRole('button',{name:'我的 H3',exact:true}).waitFor();assert.equal((await workspace()).cards[0].nodes.find(n=>n.fieldName==='prompt').fieldValue,'本地持久提示词');assert.equal((await snapshots()).length,3);assert.equal(submitted.length,3);
-  await page.getByRole('button',{name:/#0003/}).click();const v=page.locator('article video').first();await v.evaluate(video=>video.play());await poll(async()=>await v.evaluate(video=>video.currentTime>0),'saved local media did not play');assert.match(await v.getAttribute('src'),/^\/__rh\/result\//);
+  await page.getByRole('button',{name:/#0003/}).click();const v=page.locator('.result-preview video').first();await v.evaluate(video=>video.play());await poll(async()=>await v.evaluate(video=>video.currentTime>0),'saved local media did not play');assert.match(await v.getAttribute('src'),/^\/__rh\/result\//);
   await page.screenshot({path:'.browser-test-output/清理浏览器后恢复记录.png',fullPage:true});
   await page.getByRole('button',{name:'数据与备份',exact:true}).click();await page.getByRole('button',{name:'手动重置：开启新编号批次',exact:true}).click();await page.getByRole('button',{name:'确认开启新批次',exact:true}).click();await poll(async()=>(await api('/numbering')).sequenceBatch===2,'numbering reset failed');await page.getByRole('button',{name:'关闭',exact:true}).click();
   await page.getByLabel('选择任务 1',{exact:true}).check();await page.getByRole('button',{name:'运行所选 (1)',exact:true}).click();await poll(async()=>{const records=await snapshots();return records.length===4&&records.every(a=>a.status==='saved');},'new batch generation did not archive',30000);const batchRecord=(await snapshots()).find(a=>a.sequenceBatch===2);assert.equal(batchRecord.displaySequence,1);assert.equal(batchRecord.sequence,4);assert.ok(batchRecord.files[0].filename.startsWith('0001_B02_'));assert.equal((await api('/numbering')).next,2);
@@ -116,9 +117,70 @@ try{
   await page.screenshot({path:'.browser-test-output/可调布局与用时记录.png',fullPage:true});
   await api('/snapshot/attempt:'+batchRecord.id,{method:'PATCH',body:JSON.stringify({fields:{status:'unknown'}})});await page.getByRole('button',{name:'个人中心',exact:true}).click();await page.getByRole('button',{name:'编辑账号 '+batchRecord.accountNote,exact:true}).click();await page.getByLabel('新增或编辑 API Key').fill('replacement-key');await page.getByRole('button',{name:'保存修改',exact:true}).click();await page.getByText(/暂不能替换密钥/).waitFor();await page.getByRole('button',{name:'取消',exact:true}).click();await page.getByRole('button',{name:'删除账号 '+batchRecord.accountNote,exact:true}).click();await page.getByText(/处理完成后再删除/).waitFor();await page.getByRole('button',{name:'保存并关闭',exact:true}).click();await api('/snapshot/attempt:'+batchRecord.id,{method:'PATCH',body:JSON.stringify({fields:{status:'saved'}})});
 
-  const missingPath=batchRecord.files[0].path;assert.ok(missingPath.startsWith(dataDir));await fs.unlink(missingPath);await page.getByRole('button',{name:'刷新记录',exact:true}).click();const missingArticle=page.locator('article').filter({hasText:'B02'});await missingArticle.getByText('归档文件缺失，可补存',{exact:true}).waitFor();assert.equal(await missingArticle.getByRole('button',{name:'定位文件',exact:true}).count(),0);await missingArticle.getByRole('button',{name:'保存结果 / 重试下载',exact:true}).click();await poll(async()=>(await snapshots()).find(a=>a.id===batchRecord.id)?.localResultsMissing===false,'missing result repair failed');assert.equal(submitted.length,4);
+  const missingPath=batchRecord.files[0].path;assert.ok(missingPath.startsWith(dataDir));await fs.unlink(missingPath);await page.getByRole('button',{name:'刷新记录',exact:true}).click();const missingArticle=page.locator('article').filter({hasText:'B02'});await missingArticle.getByText('文件缺失',{exact:true}).waitFor();assert.equal(await missingArticle.getByRole('button',{name:'定位文件',exact:true}).count(),0);await missingArticle.getByRole('button',{name:'保存结果 / 重试下载',exact:true}).click();await poll(async()=>(await snapshots()).find(a=>a.id===batchRecord.id)?.localResultsMissing===false,'missing result repair failed');assert.equal(submitted.length,4);
   await api('/snapshot/attempt:'+batchRecord.id,{method:'PATCH',body:JSON.stringify({fields:{status:'generation_failed'}})});await page.getByRole('button',{name:'刷新记录',exact:true}).click();const failedStatus=page.locator('article').filter({hasText:'B02'}).getByText('生成失败',{exact:true});await failedStatus.waitFor();assert.equal(await failedStatus.evaluate(el=>getComputedStyle(el).color),'rgb(239, 68, 68)');await api('/snapshot/attempt:'+batchRecord.id,{method:'PATCH',body:JSON.stringify({fields:{status:'saved'}})});
+
+  // Task identity must link every surface, even for duplicated apps/names and multiple runs.
+  await page.getByRole('button',{name:'刷新记录',exact:true}).click();
+  const taskData=await workspace(),firstId=taskData.cards[0].id,secondId=taskData.cards[1].id;
+  const firstAttempt=(await snapshots()).find(a=>a.cardId===firstId&&a.sequenceBatch===1);
+  const recordFor=id=>page.locator('.production-record[data-attempt-id="'+id+'"]');
+  const focused=async id=>{
+    await poll(async()=>await page.locator('.result-preview').getAttribute('data-task-id')===id,'preview task identity mismatch');
+    const states=await page.locator('[data-task-id][data-task-focused]').evaluateAll(elements=>elements.map(el=>({id:el.dataset.taskId,focused:el.dataset.taskFocused})));
+    assert.ok(states.some(state=>state.id===id&&state.focused==='true'));
+    assert.ok(states.every(state=>state.focused!=='true'||state.id===id),'unrelated task highlighted');
+    assert.equal(await page.locator('.task-nav-row[data-task-id="'+id+'"]').getAttribute('data-task-focused'),'true');
+    for(const record of await page.locator('.production-record[data-task-id="'+id+'"]').all())assert.equal(await record.getAttribute('data-task-focused'),'true');
+  };
+  await recordFor(firstAttempt.id).locator('.record-summary').click();await focused(firstId);
+  assert.equal(await page.locator('.result-preview').getAttribute('data-attempt-id'),firstAttempt.id);
+  assert.equal(await recordFor(firstAttempt.id).getAttribute('data-attempt-selected'),'true');
+  assert.equal(await recordFor(batchRecord.id).getAttribute('data-task-focused'),'true');
+  await recordFor(batchRecord.id).locator('.record-summary').click();await focused(firstId);
+  assert.equal(await page.locator('.result-preview').getAttribute('data-attempt-id'),batchRecord.id);
+  await page.locator('.task-nav-row[data-task-id="'+secondId+'"]>button').first().click();await focused(secondId);
+  await page.getByRole('button',{name:'批量对照',exact:true}).click();
+  await page.getByLabel('批量任务名称 1',{exact:true}).focus();await focused(firstId);
+  assert.equal(await page.locator('tr[data-task-id="'+firstId+'"]').getAttribute('data-task-focused'),'true');
+  await page.getByLabel('批量文字参数 2',{exact:true}).focus();await focused(secondId);
+  await page.getByRole('button',{name:'卡片总览',exact:true}).click();
+  await page.getByLabel('总览任务名称 '+firstId,{exact:true}).click();await focused(firstId);
+  const border=await page.locator('.task-surface[data-task-id="'+firstId+'"]>article').evaluate(el=>getComputedStyle(el).borderTopColor);assert.equal(border,'rgb(213, 163, 0)');
+  await page.getByRole('button',{name:'列表编辑',exact:true}).click();await page.locator('.editor-text textarea').filter({visible:true}).first().focus();await focused(firstId);
+
+  // Every output can preview locally; this does not submit a platform generation.
+  const outputs=[...batchRecord.outputs,{fileUrl:'https://result.test/image.png',fileType:'png'},{fileUrl:'https://result.test/audio.wav',fileType:'wav'}];
+  await api('/snapshot/attempt:'+batchRecord.id,{method:'PATCH',body:JSON.stringify({fields:{outputs,status:'completed'}})});
+  await page.getByRole('button',{name:'刷新记录',exact:true}).click();
+  await recordFor(batchRecord.id).getByRole('button',{name:'保存结果 / 重试下载',exact:true}).click();
+  await poll(async()=>(await snapshots()).find(a=>a.id===batchRecord.id)?.files.length===3,'multiple outputs not archived');
+  await recordFor(batchRecord.id).locator('.record-summary').click();
+  await page.getByRole('button',{name:'预览结果 2',exact:true}).click();
+  await poll(async()=>await page.locator('.preview-player>img').evaluate(img=>img.complete&&img.naturalWidth>0),'local image did not decode');
+  assert.match(await page.locator('.preview-player>img').getAttribute('src'),/^\/__rh\/result\//);
+  await page.getByRole('button',{name:'预览结果 3',exact:true}).click();
+  const audio=page.locator('.preview-player>audio');await audio.evaluate(audio=>audio.play());await poll(async()=>await audio.evaluate(audio=>audio.currentTime>0),'local audio did not play');
+  await page.getByRole('button',{name:'预览结果 1',exact:true}).click();
+  const newVideo=page.locator('.preview-player>video');await newVideo.evaluate(video=>video.play());await poll(async()=>await newVideo.evaluate(video=>video.currentTime>0),'video selection did not play');
+  const resize=page.getByRole('separator',{name:'调整预览高度',exact:true});await resize.focus();await resize.press('ArrowUp');await poll(async()=>Number((await api('/settings')).rh_result_preview_height)===240,'preview height not persisted');
+  await page.getByRole('button',{name:'放大结果预览',exact:true}).click();await poll(async()=>await page.evaluate(()=>document.fullscreenElement?.classList.contains('result-preview')),'preview fullscreen unavailable');await page.evaluate(()=>document.exitFullscreen());
+  const locate=[];await page.route('**/__rh/reveal',async route=>{locate.push(JSON.parse(route.request().postData()).path);return route.fulfill({json:{ok:true}});});
+  await page.getByRole('button',{name:'定位预览文件',exact:true}).click();await poll(async()=>locate.length===1,'preview locate request missing');
+  await recordFor(batchRecord.id).getByRole('button',{name:'定位文件',exact:true}).click();await poll(async()=>locate.length===2,'record locate request missing');assert.equal(locate[0],(await snapshots()).find(a=>a.id===batchRecord.id).files[0].path);assert.equal(locate[1],locate[0]);
+  const summary=recordFor(batchRecord.id).locator('.record-summary');assert.ok((await summary.boundingBox()).height<100,'record summary too tall');
+  await page.screenshot({path:'.browser-test-output/任务联动与结果预览.png',fullPage:true});
+  await page.setViewportSize({width:1366,height:768});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));assert.ok((await page.locator('.editor-body').filter({visible:true}).boundingBox()).height>100,'preview must leave room for parameter editing');await page.screenshot({path:'.browser-test-output/紧凑记录与预览-1366.png',fullPage:true});await page.setViewportSize({width:1920,height:1080});
+
+  // Removing configuration leaves record preview available and never selects an unrelated task.
+  await page.getByRole('button',{name:'删除导航任务 1',exact:true}).click();await poll(async()=>(await workspace()).cards.length===2,'history source delete not persisted');
+  await recordFor(batchRecord.id).locator('.record-summary').click();
+  await page.getByText('历史任务已移出当前列表',{exact:true}).waitFor();
+  assert.equal(await page.locator('.task-nav-row[data-task-focused=true]').count(),0);
+  assert.equal(await page.locator('.result-preview').getAttribute('data-attempt-id'),batchRecord.id);
+  await page.getByRole('button',{name:'恢复配置为新任务',exact:true}).click();await poll(async()=>(await workspace()).cards.length===3,'history restore not persisted');
+  const restored=(await workspace()).cards.at(-1);assert.notEqual(restored.id,firstId);assert.equal(restored.sourceAttemptId,batchRecord.id);assert.equal(submitted.length,4,'preview and restore must not generate');
   assert.deepEqual(errors,[]);
-  console.log('通过：35 个模拟账号的单个新增、批量导入预览、去重、验证失败停用、搜索筛选、文本与 JSON 导出；首页收藏改名与取消撤销；三种视图临时序号、删除撤销、左右拖宽与重开恢复、专注模式；收起侧栏仍完成查询归档；4分32秒用时与黄色账号积分；手动新批次归档及接续编号；待确认任务禁止换密钥与删除账号；真实本地文件库、Windows 密钥保护、旧 File 迁移、取消收藏与撤销、多应用分组、任务重命名与完整复制、批量独立改参、常驻新建/保存/全部运行、两账号模拟调度、编号文件与积分、真实文件归档、本地视频播放、界面备份恢复、清除全部浏览器网站数据、服务重启与全新浏览器资料恢复；零真实平台生成。');
+  console.log('通过：任务在导航/列表/对照/卡片/记录之间双向联动、旧记录精确预览、三类多文件本地播放、预览高度与全屏、两处定位请求、删除后历史预览与恢复；35 个模拟账号的单个新增、批量导入预览、去重、验证失败停用、搜索筛选、文本与 JSON 导出；首页收藏改名与取消撤销；三种视图临时序号、删除撤销、左右拖宽与重开恢复、专注模式；收起侧栏仍完成查询归档；4分32秒用时与黄色账号积分；手动新批次归档及接续编号；待确认任务禁止换密钥与删除账号；真实本地文件库、Windows 密钥保护、旧 File 迁移、取消收藏与撤销、多应用分组、任务重命名与完整复制、批量独立改参、常驻新建/保存/全部运行、两账号模拟调度、编号文件与积分、真实文件归档、本地视频播放、界面备份恢复、清除全部浏览器网站数据、服务重启与全新浏览器资料恢复；零真实平台生成。');
 }catch(error){console.error(serverLog);if(page){await page.screenshot({path:'.browser-test-output/durable-failure.png',fullPage:true}).catch(()=>{});console.error((await page.locator('body').innerText()).slice(-8000));}throw error;}
 finally{await context?.close();await stop();await fs.rm(root,{recursive:true,force:true});}

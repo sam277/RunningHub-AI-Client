@@ -91,3 +91,13 @@ test('new-batch output prefixes remain unchanged on reopening the local library'
   assert.deepEqual(await fs.readdir(join(f.root,'results')),[filename]);
  }finally{await f.close();}
 });
+
+test('reveal resolves the real saved file and propagates Explorer errors through the local API',async()=>{
+ const root=await fs.mkdtemp(join(tmpdir(),'rh-reveal-'));let selected;
+ const api=await createLocalAPI({project:root,dataDirectory:join(root,'data'),storeOptions:{...protection,revealPath:async(path,directory)=>{selected={path,directory};throw new Error('native reveal rejected');}}});
+ const server=createServer((req,res)=>api.middleware(req,res,()=>res.end()));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+server.address().port;
+ try{const receipt=await api.store.receive('results',"0001_中文 逗号,测试.mp4",Readable.from('fake video'));const session=await(await fetch(base+'/__rh/session')).json(),headers={'X-RH-Token':session.token,'Content-Type':'application/json'};
+ const response=await fetch(base+'/__rh/reveal',{method:'POST',headers,body:JSON.stringify({path:receipt.path})});assert.equal(response.status,400);assert.match((await response.json()).error,/native reveal rejected/);assert.equal(selected.path,await fs.realpath(receipt.path));assert.equal(selected.directory,false);
+ selected=undefined;const outside=await fetch(base+'/__rh/reveal',{method:'POST',headers,body:JSON.stringify({path:root})});assert.equal(outside.status,400);assert.equal(selected,undefined);
+ }finally{await new Promise(resolve=>server.close(resolve));await api.close();await fs.rm(root,{recursive:true,force:true});}
+});
