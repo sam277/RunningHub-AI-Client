@@ -56,6 +56,7 @@ export async function requestAttemptCancellation(id:string,accounts:ApiKeyEntry[
   if(!attempt||!isCancellableAttempt(attempt))return;
   // Keep intent outside saveAttempt's mutable fields: an older query must never erase it.
   await patchCancellation(id,{cancelRequestedAt:Date.now(),cancelError:null,...(attempt.cancelError?{cancelSentAt:null}:{})});
+  if(!attempt.taskId)uploadControllers.get(id)?.abort();
   if(!attempt.taskId && !active.has(id) && attempt.status==='preparing'){
     await saveAttempt({...attempt,status:'cancelled',timings:{...attempt.timings,failedAt:Date.now()},error:undefined});return;
   }
@@ -65,6 +66,7 @@ export async function requestAttemptCancellation(id:string,accounts:ApiKeyEntry[
   await sendCancellation(id,accounts);
 }
 const active = new Set<string>();
+const uploadControllers=new Map<string,AbortController>();
 const recovering = new Set<string>();
 const downloading = new Set<string>();
 const notify = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event('rh-production-change')); };
@@ -136,9 +138,11 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
   // If this fails, nothing has been submitted remotely.
   attempt = await saveAttempt(attempt);
   active.add(attempt.id);
+  const uploadController=new AbortController();uploadControllers.set(id,uploadController);
   try {
     const result = await executeWorkflowTask({
       ...request, autoSaveEnabled: false,
+      control:{...request.control,uploadSignal:uploadController.signal},
       callbacks: {
         ...request.callbacks,
         onStatusChange: async status => {
@@ -175,7 +179,7 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
     await saveAttempt({ ...attempt, status,timings:{...attempt.timings,failedAt:['generation_failed','rejected','interrupted','cancelled'].includes(status)?Date.now():undefined}, error: status==='cancelled'?undefined:error?.message || '执行中断' }).catch(() => {});
     if (attempt.taskId && !(error instanceof TaskExecutionError) && !(error instanceof TaskCancelledError)) throw new TaskExecutionError(attempt.taskId, error);
     throw error;
-  } finally { active.delete(attempt.id); }
+  } finally { active.delete(attempt.id);uploadControllers.delete(id); }
 }
 
 // Query only. This path cannot call a submit endpoint.

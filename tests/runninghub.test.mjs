@@ -229,3 +229,10 @@ test('all official cancelled status spellings are terminal and executor preserve
   globalThis.fetch=async url=>url.endsWith('/ai-app/run')?json({code:0,data:{taskId:'accepted-task',taskStatus:'RUNNING'}}):json({taskId:'accepted-task',status:'CANCEL',results:[]});
   await assert.rejects(api.executeWorkflowTask({apiKey:'original-key',webappId:'123',taskNodes:[],autoSaveEnabled:false}),error=>error instanceof api.RemoteTaskCancelledError&&error.taskId==='accepted-task'&&error.taskSubmitted);
 });
+
+test('aborted media upload never falls back to another endpoint',async()=>{
+  const controller=new AbortController();let calls=0;
+  globalThis.fetch=async(_url,init)=>{calls++;assert.equal(init.signal,controller.signal);controller.abort();throw new TypeError('Failed to fetch');};
+  await assert.rejects(api.uploadFile('original-key',new File(['image'],'ref.png',{type:'image/png'}),controller.signal),/Failed to fetch/);
+  assert.equal(calls,1);
+});

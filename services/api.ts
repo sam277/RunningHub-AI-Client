@@ -336,7 +336,7 @@ export const fetchWorkflowTemplate = async (
   }
 };
 
-export const uploadMediaV2 = async (apiKey: string, file: File): Promise<UploadData> => {
+export const uploadMediaV2 = async (apiKey: string, file: File, signal?:AbortSignal): Promise<UploadData> => {
   const region = await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/openapi/v2/media/upload/binary`;
   const formData = new FormData();
@@ -346,6 +346,7 @@ export const uploadMediaV2 = async (apiKey: string, file: File): Promise<UploadD
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: formData,
+    signal,
   });
 
   const json = await handleResponse<any>(response);
@@ -365,7 +366,7 @@ export const uploadMediaV2 = async (apiKey: string, file: File): Promise<UploadD
   };
 };
 
-const legacyUploadFile = async (apiKey: string, file: File): Promise<UploadData> => {
+const legacyUploadFile = async (apiKey: string, file: File, signal?:AbortSignal): Promise<UploadData> => {
   const region = await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/task/openapi/upload`;
   const formData = new FormData();
@@ -376,6 +377,7 @@ const legacyUploadFile = async (apiKey: string, file: File): Promise<UploadData>
   const response = await fetch(url, {
     method: 'POST',
     body: formData,
+    signal,
   });
 
   const json = await handleResponse<ApiResponse<UploadData>>(response);
@@ -390,13 +392,14 @@ const legacyUploadFile = async (apiKey: string, file: File): Promise<UploadData>
   };
 };
 
-export const uploadFile = async (apiKey: string, file: File): Promise<UploadData> => {
+export const uploadFile = async (apiKey: string, file: File, signal?:AbortSignal): Promise<UploadData> => {
   try {
-    return await uploadMediaV2(apiKey, file);
+    return await uploadMediaV2(apiKey, file, signal);
   } catch (error: any) {
+    if(signal?.aborted)throw error;
     const message = String(error?.message || '');
     if (/HTTP Error: 404|HTTP Error: 405|HTTP Error: 500|Failed to fetch/i.test(message)) {
-      return legacyUploadFile(apiKey, file);
+      return legacyUploadFile(apiKey, file, signal);
     }
     throw error;
   }

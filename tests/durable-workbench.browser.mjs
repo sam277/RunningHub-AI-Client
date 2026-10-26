@@ -266,8 +266,8 @@ try{
   blockUploads=true;await page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview').getByRole('button',{name:'运行',exact:true}).click();
   await poll(async()=>uploadGates.length===2,'upload cancellation gates not reached');
   await page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview').getByRole('button',{name:'取消',exact:true}).click();
+  await poll(async()=>{const list=await snapshots();return list.length===8&&list.filter(a=>a.status==='cancelled').length===4;},'blocked upload did not abort without waiting for the server');
   blockUploads=false;for(const release of uploadGates.splice(0))release();
-  await poll(async()=>{const list=await snapshots();return list.length===8&&list.filter(a=>a.status==='cancelled').length===4;},'pre-submit cancellation was not recorded without payment');
   assert.equal(submitted.length,6,'stopping during upload must not submit to platform');
   const changedOverview=page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview');await changedOverview.getByRole('button',{name:'提示词',exact:true}).click();await page.getByRole('button',{name:'编辑全文',exact:true}).click();await page.getByLabel('编辑全文',{exact:true}).fill('生成完成以后再修改的配置');await page.getByRole('button',{name:'应用修改',exact:true}).click();await page.getByRole('button',{name:'关闭文字预览',exact:true}).click();await changedOverview.getByText('已修改，待生成',{exact:true}).waitFor();assert.equal(submitted.length,6);
   // The same controls work in list, table and overview; queued and running are distinct.

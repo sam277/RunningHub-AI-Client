@@ -46,6 +46,7 @@ export interface ExecuteTaskCallbacks {
 }
 
 export interface ExecuteTaskControl {
+  uploadSignal?:AbortSignal;
   isCancelled?: () => boolean;
   registerConnection?: (connection: { close: () => void } | null) => () => void;
   pollOffsetMs?: number;
@@ -217,6 +218,7 @@ const uploadPendingFilesForTask = async (
   taskIndex = 0,
   onLog?: (message: string) => void,
   logPrefix = '',
+  control?:ExecuteTaskControl,
 ): Promise<NodeInfo[]> => {
   if (!pendingFiles || Object.keys(pendingFiles).length === 0) {
     return taskNodes.map(node => ({ ...node }));
@@ -235,7 +237,11 @@ const uploadPendingFilesForTask = async (
   const clonedNodes = taskNodes.map(node => ({ ...node }));
 
   for (const { nodeId, fieldName, file } of filesToUpload) {
-    const result = await uploadFile(apiKey, file);
+    ensureNotCancelled(control);
+    let result;
+    try{result=await uploadFile(apiKey,file,control?.uploadSignal);}
+    catch(error){if(control?.uploadSignal?.aborted||control?.isCancelled?.())throw new TaskCancelledError();throw error;}
+    ensureNotCancelled(control);
     const targetIndex = clonedNodes.findIndex(node => String(node.nodeId) === String(nodeId) && (node.fieldName || '') === fieldName);
     if (targetIndex !== -1) {
       clonedNodes[targetIndex].fieldValue = result.fileName;
@@ -262,7 +268,7 @@ export const executeWorkflowTask = async ({
   ensureNotCancelled(control);
   const logPrefix = taskLabel ? `${taskLabel}: ` : '';
 
-  const nodesToSubmit = await uploadPendingFilesForTask(apiKey, taskNodes, pendingFiles, taskIndex, callbacks?.onLog, logPrefix);
+  const nodesToSubmit = await uploadPendingFilesForTask(apiKey, taskNodes, pendingFiles, taskIndex, callbacks?.onLog, logPrefix, control);
   ensureNotCancelled(control);
 
   await callbacks?.onStatusChange?.('SUBMITTING');

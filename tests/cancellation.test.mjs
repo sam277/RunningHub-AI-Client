@@ -28,6 +28,17 @@ test('durable cancellation covers submit races, rejection/retry, completed races
  const run=cardId=>app.runProductionTask(request,{cardId,name:cardId,account}).catch(error=>error);
  try{
   await app.initializeLocalPersistence();
+  await t.test('cancelling a blocked upload aborts immediately without submitting',async()=>{
+   let uploading=false,aborted=false,calls=0;
+   platform=async(url,init)=>{
+    calls++;assert.ok(url.endsWith('/media/upload/binary'));uploading=true;
+    return new Promise((_,reject)=>init.signal.addEventListener('abort',()=>{aborted=true;reject(new DOMException('Aborted','AbortError'));},{once:true}));
+   };
+   const uploadRequest={...request,taskNodes:[{nodeId:'1',fieldName:'image',fieldType:'IMAGE',fieldValue:''}],pendingFiles:{'single|1|image':new File(['source'],'source.png',{type:'image/png'})}};
+   const pending=app.runProductionTask(uploadRequest,{cardId:'upload',name:'upload',account}).catch(error=>error);
+   await wait(()=>uploading);await app.requestAttemptCancellation((await record('upload')).id,[account]);
+   assert.ok(await pending instanceof app.TaskCancelledError);assert.equal(aborted,true);assert.equal(calls,1);assert.equal((await record('upload')).status,'cancelled');
+  });
   await t.test('cancellation during POST is persisted and sent with original credentials on acceptance',async()=>{
    let release,received=false,cancelled=false,submits=0,cancels=0;
    platform=async(url,init)=>{
