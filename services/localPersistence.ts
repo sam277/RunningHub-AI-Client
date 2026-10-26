@@ -2,6 +2,9 @@ export interface LocalSession { token: string; rootPath: string; mode: 'local'; 
 export interface LocalSummary { rootPath: string; databaseFile: string; bytes: number; files: number; settings: number; snapshots: number; keyProtection: string; }
 const localFlushers=new Set<()=>Promise<void>>();
 let workspaceReloading=false;
+let schedulerRunning=false;
+export const isLocalSchedulerRunning=()=>schedulerRunning;
+export const setLocalSchedulerRunning=(value:boolean)=>{schedulerRunning=value;if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('rh-scheduler-state',{detail:value}));};
 export const registerLocalFlusher=(fn:()=>Promise<void>)=>{localFlushers.add(fn);return()=>{localFlushers.delete(fn);};};
 export const isWorkspaceReloading=()=>workspaceReloading;
 export const setWorkspaceReloading=(value:boolean)=>{workspaceReloading=value;};

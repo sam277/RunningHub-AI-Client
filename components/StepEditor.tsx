@@ -1,3 +1,6 @@
+import MediaField from './multitask/MediaField';
+import FieldInput from './multitask/FieldInput';
+import { fieldKey,fieldLabel,defaultPinnedFields,pendingKey,hasFieldValue,schemaKey } from '../services/workbenchFields';
 import { settingsStorage } from '../services/localPersistence';
 import React, { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { NodeInfo, WebAppInfo, InstanceType, PendingFilesMap, RunningHubModelPricePreview, StandardModelConfig } from '../types';
@@ -28,6 +31,7 @@ interface StepEditorProps {
     runLabel?: string;
     onSnapshotChange?: () => void;
     productionLayout?: boolean;
+    applicationId?:string;
 }
 
 export interface StepEditorSnapshot {
@@ -88,8 +92,13 @@ const hasSameNodeStructure = (left: NodeInfo[], right: NodeInfo[]) => {
     });
 };
 
-const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange, runLabel, productionLayout = false }, ref) => {
+const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange, runLabel, productionLayout = false, applicationId = '' }, ref) => {
     const editorDomId = useId().replace(/:/g, '-');
+    const [textKey,setTextKey]=useState(''),[allParameters,setAllParameters]=useState(false),[parameterSearch,setParameterSearch]=useState('');
+    const preferenceKey='rh_editor_pins_'+(applicationId||webAppInfo?.webappName||'default');
+    const [pins,setPins]=useState<string[]>([]);
+    useEffect(()=>{try{const saved=settingsStorage.getItem(preferenceKey);setPins(saved?JSON.parse(saved):defaultPinnedFields(nodes));}catch{setPins(defaultPinnedFields(nodes));}},[preferenceKey,schemaKey(applicationId,nodes)]);
+    const togglePin=(node:NodeInfo)=>setPins(previous=>{const next=previous.includes(fieldKey(node))?previous.filter(key=>key!==fieldKey(node)):[...previous,fieldKey(node)];settingsStorage.setItem(preferenceKey,JSON.stringify(next));return next;});
     const [mediaWidth,setMediaWidth]=useState(()=>Math.max(30,Math.min(65,Number(settingsStorage.getItem('rh_editor_media_width'))||45)));
     const [localNodes, setLocalNodes] = useState<NodeInfo[]>(() => nodes.map(node => ({ ...node })));
     const uploadRequestsRef = useRef(new Map<string, symbol>());
@@ -933,7 +942,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                 onRetryTask={onRetryTask}
             />
             {/* ... */}
-            <div className="editor-heading p-5 border-b border-slate-200 dark:border-slate-800/50 bg-white dark:bg-[#161920] shrink-0 z-10 shadow-sm">
+            <div className={(productionLayout?"hidden ":"")+"editor-heading p-5 border-b border-slate-200 dark:border-slate-800/50 bg-white dark:bg-[#161920] shrink-0 z-10 shadow-sm"}>
                 <div className="flex items-center justify-between">
                     <h2 className="text-lg font-bold flex items-center gap-2 text-slate-800 dark:text-white">
                         {mode === 'standard' ? '标准模型参数' : '参数设置'}
@@ -1026,9 +1035,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                 </div>
             )}
 
-            {productionLayout && isConnected && <nav className="editor-overview" aria-label="全部参数概览">
-              {localNodes.map((node,idx)=><button type="button" key={node.nodeId+'-'+idx} title={primaryLabel(node)+'：'+node.fieldValue} onClick={()=>{const element=document.getElementById(editorDomId+'-field-'+idx);element?.scrollIntoView({block:'nearest',behavior:'smooth'});element?.querySelector<HTMLElement>('textarea,select,input:not([type=file]),button')?.focus();}}>{primaryLabel(node)} <span className="text-slate-500">{String(node.fieldValue||'空').slice(0,12)}</span></button>)}
-            </nav>}
+            {productionLayout&&isConnected&&<div className="parameter-tools"><button aria-expanded={allParameters} onClick={()=>setAllParameters(!allParameters)}>全部参数 · {localNodes.length}</button><span>{localNodes.filter(n=>n.required&&!hasFieldValue(n.fieldValue)&&!pendingFiles[pendingKey(n)]).length?'有必填项未填写':''}</span><label>素材宽度 <input aria-label="素材区域宽度" type="range" min="25" max="60" value={mediaWidth} onChange={e=>{setMediaWidth(Number(e.target.value));settingsStorage.setItem('rh_editor_media_width',e.target.value);}}/></label></div>}
             {/* Scrollable Content */}
             <div className={productionLayout && isConnected && localNodes.length>0 && !isNodesLoading ? "flex min-h-0 flex-1" : "flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth"}>
                 {!isConnected ? (
@@ -1058,12 +1065,15 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                         <p className="text-sm">无可用参数</p>
                     </div>
                 ) : (
-                    productionLayout ? <div className="editor-body" style={{'--media-fr':(mediaWidth/(100-mediaWidth))+'fr'} as React.CSSProperties}>
-                      {(['short','media','text'] as const).map(group=><section key={group} className={'editor-'+group} aria-label={group==='media'?'参考素材':group==='text'?'文字参数':'基础参数'}>
-                        {localNodes.map((node,idx)=>fieldGroup(node)===group ? <div id={editorDomId+'-field-'+idx} key={node.nodeId+'-'+idx} className={'editor-field '+(group==='media'&&!hasMediaValue(node.fieldValue)&&!previews[node.nodeId+'_'+idx]?'empty-media':'')}>
-                          <h3>{primaryLabel(node)}</h3>{renderNodeInput(node,idx)}
-                        </div>:null)}
-                      </section>)}
+                    productionLayout ? <div className="editor-production-body" style={{'--media-percent':mediaWidth+'%'} as React.CSSProperties}>
+                      <section className="editor-short" aria-label="常用参数">{localNodes.map((node,idx)=>fieldGroup(node)==='short'&&pins.includes(fieldKey(node))?<label className="compact-parameter" key={fieldKey(node)}><span>{primaryLabel(node)}{node.required&&' *'}</span><FieldInput node={node} label={primaryLabel(node)} disabled={runType!=='none'} onChange={value=>handleTextChange(idx,value)}/></label>:null)}</section>
+                      <div className="editor-media-text">
+                        <section className="editor-media" aria-label="参考素材">{localNodes.map((node,idx)=>fieldGroup(node)==='media'?<MediaField id={editorDomId+'-field-'+idx} key={fieldKey(node)} label={primaryLabel(node)} type={getNodePresentation(node).effectiveType} file={pendingFiles[pendingKey(node)]} value={hasMediaValue(node.fieldValue)?node.fieldValue:''} remoteUrl={hasMediaValue(node.fieldValue)?buildFileUrl(node.fieldValue,primaryApiKey):undefined} uploading={uploadingState[node.nodeId+'_'+idx]} error={errors[node.nodeId+'_'+idx]} disabled={runType!=='none'} onFile={file=>void processFile(idx,file)} onClear={()=>handleClearFile(idx)}/>:null)}</section>
+                        <section className="editor-text" aria-label="文字参数"><nav>{localNodes.filter(node=>fieldGroup(node)==='text').map(node=><button key={fieldKey(node)} aria-pressed={fieldKey(node)===(localNodes.some(n=>fieldKey(n)===textKey)?textKey:fieldKey(localNodes.find(n=>fieldGroup(n)==='text')||node))} onClick={()=>setTextKey(fieldKey(node))}>{primaryLabel(node)} <span>{node.fieldValue?'已填':'空'}{node.required?' *':''}</span></button>)}</nav>
+                          {localNodes.map((node,idx)=>fieldGroup(node)==='text'&&fieldKey(node)===(localNodes.some(n=>fieldGroup(n)==='text'&&fieldKey(n)===textKey)?textKey:fieldKey(localNodes.find(n=>fieldGroup(n)==='text')||node))?<label key={fieldKey(node)} className="editor-text-input"><strong>{primaryLabel(node)}</strong><textarea aria-label={primaryLabel(node)} disabled={runType!=='none'} value={node.fieldValue} onChange={e=>handleTextChange(idx,e.target.value)}/><span>{node.fieldValue.length} 字符</span></label>:null)}
+                        </section>
+                      </div>
+                      {allParameters&&<section className="all-parameters" aria-label="全部参数"><header><input aria-label="搜索参数" placeholder="搜索参数名称" value={parameterSearch} onChange={e=>setParameterSearch(e.target.value)}/><button onClick={()=>setAllParameters(false)}>收起全部参数</button></header>{localNodes.map((node,idx)=>!parameterSearch||primaryLabel(node).toLowerCase().includes(parameterSearch.toLowerCase())?<div key={fieldKey(node)} className="all-parameter-row"><header><strong>{primaryLabel(node)}{node.required?' *':''}</strong>{fieldGroup(node)==='short'&&<button aria-pressed={pins.includes(fieldKey(node))} onClick={()=>togglePin(node)}>{pins.includes(fieldKey(node))?'取消常用':'设为常用'}</button>}</header>{fieldGroup(node)==='media'?<button onClick={()=>{setAllParameters(false);const target=document.getElementById(editorDomId+'-field-'+idx);(target as HTMLElement)?.focus();}}>在素材区编辑</button>:fieldGroup(node)==='short'?<FieldInput node={node} label={'全部参数 '+primaryLabel(node)} disabled={runType!=='none'} onChange={value=>handleTextChange(idx,value)}/>:<textarea aria-label={'全部参数 '+primaryLabel(node)} disabled={runType!=='none'} value={node.fieldValue} onChange={e=>handleTextChange(idx,e.target.value)}/>}</div>:null)}</section>}
                     </div> : (
                     localNodes.map((node, idx) => {
                         const { effectiveType } = getNodePresentation(node);
@@ -1092,7 +1102,8 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
             </div>
 
             {/* Footer - 运行按钮固定在底部 */}
-            <div className="editor-actions bg-white dark:bg-[#161920] border-t border-slate-200 dark:border-slate-800/50 p-4 shrink-0 flex gap-3">
+            <div className={(productionLayout?"compact-editor-actions ":"")+"editor-actions bg-white dark:bg-[#161920] border-t border-slate-200 dark:border-slate-800/50 p-4 shrink-0 flex gap-3"}>
+                {!productionLayout&&<>
                 {/* 单独运行按钮 */}
                 {runType === 'single' && mode !== 'standard' ? (
                     <button
@@ -1100,7 +1111,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                         className="flex-1 flex justify-center items-center gap-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-5 rounded-lg shadow-md shadow-red-200 dark:shadow-red-900/20 transform hover:-translate-y-0.5 transition-all text-sm"
                     >
                         <X className="w-4 h-4" />
-                        取消运行
+                        {productionLayout?'停止后续':'取消运行'}
                     </button>
                 ) : (
                     <button
@@ -1128,18 +1139,18 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                                 className="flex-1 flex justify-center items-center gap-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-5 rounded-lg shadow-md shadow-red-200 dark:shadow-red-900/20 transform hover:-translate-y-0.5 transition-all text-sm"
                             >
                                 <X className="w-4 h-4" />
-                                取消批量
+                                {productionLayout?'停止后续':'取消批量'}
                             </button>
-                        ) : (
+                        ) : (!productionLayout||batchList.length>0) ? (
                             <button
                                 onClick={handleBatchRun}
                                 disabled={!isConnected || hasUploadingFiles || runType === 'single'}
                                 className="flex-1 flex justify-center items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-semibold py-3 px-5 rounded-lg shadow-md shadow-orange-200 dark:shadow-orange-900/20 transform hover:-translate-y-0.5 transition-all disabled:opacity-50 disabled:transform-none disabled:shadow-none text-sm"
                             >
                                 <Layers className="w-4 h-4" />
-                                批量运行
+                                {productionLayout?'运行已配置的 '+batchList.length+' 组':'批量运行'}
                             </button>
-                        )}
+                        ) : null}
 
                         {/* 设置按钮 */}
                         <button
@@ -1149,10 +1160,13 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                             title="批量设置"
                         >
                             <Settings className="w-4 h-4" />
-                            <span>批量设置</span>
+                            <span>{productionLayout?'批量设置'+(batchList.length?' · '+batchList.length+'组':''):'批量设置'}</span>
                         </button>
                     </>
                 )}
+                </>}
+            {productionLayout&&<>{runType!=='none'?<button className="stop-task" onClick={onCancel}>停止后续</button>:<button className="run-task" disabled={!isConnected||hasUploadingFiles} onClick={()=>batchList.length?handleBatchRun():onRun(localNodes,undefined,pendingFiles,undefined,instanceType)}>{batchList.length?'运行 '+batchList.length+' 组':runLabel||'运行'}</button>}<button disabled={!isConnected||runType!=='none'} onClick={()=>setIsBatchModalOpen(true)}>批量设置{batchList.length?' · '+batchList.length+'组':''}</button></>}
+            {productionLayout&&<div className="editor-secondary-options"><button disabled={runType!=='none'} onClick={()=>onInstanceTypeChange?.(instanceType==='plus'?'default':'plus')}>PLUS {instanceType==='plus'?'已开':'已关'}</button>{webAppInfo&&<button onClick={()=>setIsAppInfoModalOpen(true)}>应用详情</button>}</div>}
             </div>
         </div>
     );

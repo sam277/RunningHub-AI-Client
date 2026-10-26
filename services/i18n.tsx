@@ -616,18 +616,13 @@ const localizeDocument = (root: HTMLElement) => {
 };
 
 export const LanguageProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const [language, setLanguageState] = useState<AppLanguage>(() => {
-    try {
-      return settingsStorage.getItem(LANGUAGE_STORAGE_KEY) === 'en' ? 'en' : 'zh';
-    } catch {
-      return 'zh';
-    }
-  });
+  const [language, setLanguageState] = useState<AppLanguage>('zh');
+  useEffect(()=>{settingsStorage.setItem(LANGUAGE_STORAGE_KEY,'zh');},[]);
 
   const setLanguage = (nextLanguage: AppLanguage) => {
-    setLanguageState(nextLanguage);
+    setLanguageState('zh');
     try {
-      settingsStorage.setItem(LANGUAGE_STORAGE_KEY, nextLanguage);
+      settingsStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh');
     } catch {
       // Keep the in-memory language when storage is unavailable.
     }

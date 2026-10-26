@@ -17,7 +17,7 @@ const StepEditor = lazy(() => import('./components/StepEditor'));
 const StepRunning = lazy(() => import('./components/StepRunning'));
 const WorkspacePanel = lazy(() => import('./components/WorkspacePanel'));
 const MultiTaskView = lazy(() => import('./components/MultiTaskView'));
-const ToolsView = lazy(() => import('./components/ToolsView'));
+const UnifiedSettings = lazy(() => import('./components/UnifiedSettings'));
 
 const STORAGE_KEY_API_KEYS = 'rh_api_keys_v2';
 const STORAGE_KEY_ENTERPRISE_API = 'rh_enterprise_api_v1';
@@ -92,7 +92,7 @@ const viewLoadingFallback = (
 );
 
 function App() {
-  const { language, toggleLanguage, text } = useLanguage();
+  const { text } = useLanguage();
   // Global View State
   const [startupView, setStartupView] = useState<StartupView>(() => {
     try {
@@ -215,7 +215,9 @@ function App() {
   });
 
   // Settings
-  const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab,setSettingsTab]=useState<'accounts'|'storage'|'run'|'interface'>('accounts');
+  const openSettings=(tab:'accounts'|'storage'|'run'|'interface'='accounts')=>{setSettingsTab(tab);setCurrentView('tools');};
+  useEffect(()=>{const show=()=>openSettings('storage');window.addEventListener('rh-open-data-settings',show);return()=>window.removeEventListener('rh-open-data-settings',show);},[]);
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [termsMode, setTermsMode] = useState<'first-time' | 'about'>('first-time');
 
@@ -482,17 +484,6 @@ function App() {
         <div className="flex items-center gap-4">
           {/* Navigation Tabs */}
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={toggleLanguage}
-              data-i18n-ignore="true"
-              aria-label={language === 'zh' ? 'Switch to English' : '切换到中文'}
-              title={language === 'zh' ? 'Switch to English' : '切换到中文'}
-              className="mr-1 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-50 hover:text-brand-600 dark:text-slate-400 dark:hover:bg-slate-800/50 dark:hover:text-brand-400"
-            >
-              <Languages className="h-4 w-4" />
-              <span>{language === 'zh' ? 'EN' : '中文'}</span>
-            </button>
             {tabs.map((tab) => {
               const isActive = currentView === tab.id;
               const Icon = tab.icon;
@@ -512,16 +503,7 @@ function App() {
             })}
           </div>
 
-          <div className="w-px h-4 bg-slate-200 dark:bg-slate-700"></div>
 
-          {/* Personal Center */}
-          <button
-            onClick={() => setShowSettings(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-brand-600 dark:hover:text-brand-400 transition-colors text-sm"
-          >
-            <User className="w-4 h-4" />
-            <span>{text('个人中心', 'Account')}</span>
-          </button>
         </div>
       </header>
 
@@ -545,7 +527,9 @@ function App() {
 
           <div className={`flex-1 overflow-hidden ${currentView === 'tools' ? 'flex' : 'hidden'}`}>
             {currentView === 'tools' && (
-              <ToolsView
+              <UnifiedSettings
+                tab={settingsTab} onTab={setSettingsTab}
+                apiKeys={apiKeys} enterpriseApi={enterpriseApi} onUpdateApiKeys={handleUpdateApiKeys} onUpdateEnterpriseApi={handleUpdateEnterpriseApi}
                 autoSaveConfig={autoSaveConfig}
                 onUpdateAutoSave={handleUpdateAutoSave}
                 startupView={startupView}
@@ -577,7 +561,7 @@ function App() {
                     onNext={handleConfigComplete}
                     initialWebappId={webappId}
                     enterpriseApi={enterpriseApi}
-                    onOpenSettings={() => setShowSettings(true)}
+                    onOpenSettings={() => openSettings()}
                     autoSaveConfig={autoSaveConfig}
                     onAutoSaveChange={handleUpdateAutoSave}
                   />
@@ -651,18 +635,9 @@ function App() {
         </div>
       </Suspense>
 
-      <LocalDataPanel />
+      <LocalDataPanel barOnly onOpen={()=>openSettings('storage')}/>
 
-      <SettingsModal
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        apiKeys={apiKeys}
-        enterpriseApi={enterpriseApi}
-        onUpdateApiKeys={handleUpdateApiKeys}
-        onUpdateEnterpriseApi={handleUpdateEnterpriseApi}
-        autoSaveConfig={autoSaveConfig}
-        onUpdateAutoSave={handleUpdateAutoSave}
-      />
+
 
       {/* Batch Result Modal */}
       {batchResult && (

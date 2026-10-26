@@ -9,6 +9,7 @@ import { flushLocalSettings } from './localPersistence';
 export type AttemptStatus = 'preparing' | 'submitting' | 'unknown' | 'queued' | 'running' | 'query_failed' | 'generation_failed' | 'rejected' | 'interrupted' | 'completed' | 'downloading' | 'download_failed' | 'saved';
 export interface ProductionAttempt {
   parentAttemptId?: string;
+  sourceDigest?:string;
   sequence?: number;
   displaySequence?:number;
   sequenceBatch?:number;
@@ -86,11 +87,12 @@ export async function archiveAttempt(id: string, onlyIndex?: number): Promise<Pr
   } finally { downloading.delete(id); }
 }
 
-export async function runProductionTask(request: ExecuteTaskRequest, context: { cardId: string; name: string; account: ApiKeyEntry; parentAttemptId?: string }) {
+export async function runProductionTask(request: ExecuteTaskRequest, context: { cardId: string; name: string; account: ApiKeyEntry; parentAttemptId?: string;sourceDigest?:string }) {
   await flushLocalSettings();
   const id=crypto.randomUUID();
   let attempt: ProductionAttempt = {
     parentAttemptId: context.parentAttemptId,
+    sourceDigest:context.sourceDigest,
     id, ...await allocateGenerationNumber(id), cardId: context.cardId, name: context.name || '任务', webappId: request.webappId,
     accountSignature: await signature(request.apiKey), accountId: context.account.id, accountNote: context.account.note || '未备注账号',
     region: getResolvedRunningHubRegion(request.apiKey), createdAt: Date.now(), updatedAt: Date.now(), status: 'preparing',
@@ -112,6 +114,7 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
           }
         },
         beforeSubmit: async nodes => {
+          await request.callbacks?.beforeSubmit?.(nodes);
           attempt = { ...attempt, submittedNodes: structuredClone(nodes),timings:{...attempt.timings,submissionStartedAt:Date.now()}, status: 'submitting' };
           attempt = await saveAttempt(attempt);
         },

@@ -5,8 +5,8 @@ import { ApiKeyEntry } from '../../types';
 import { ATTEMPT_LABELS, archiveAttempt, loadAttemptInputs, attemptNumber, ProductionAttempt, recoverAttempt, saveAttempt, setAttemptDecision } from '../../services/production';
 import { localRequest, localSession } from '../../services/localPersistence';
 
-interface Props {accounts:ApiKeyEntry[];autoSave:boolean;attempts:ProductionAttempt[];activeTaskId?:string;selectedAttemptId?:string;readError?:string;onRefresh:()=>Promise<void>;onSelect:(attempt:ProductionAttempt)=>void;onPrepare:(attempt:ProductionAttempt)=>void;}
-export default function ProductionHistory({accounts,autoSave,attempts,activeTaskId,selectedAttemptId,readError,onRefresh,onSelect,onPrepare}:Props){
+interface Props {accounts:ApiKeyEntry[];autoSave:boolean;attempts:ProductionAttempt[];activeTaskId?:string;selectedAttemptId?:string;readError?:string;onRefresh:()=>Promise<void>;onSelect:(attempt:ProductionAttempt)=>void;onPreview:(attempt:ProductionAttempt)=>void;onPrepare:(attempt:ProductionAttempt)=>void;}
+export default function ProductionHistory({accounts,autoSave,attempts,activeTaskId,selectedAttemptId,readError,onRefresh,onSelect,onPreview,onPrepare}:Props){
   const [now,setNow]=useState(Date.now),[error,setError]=useState(''),[busy,setBusy]=useState<string|null>(null),[taskId,setTaskId]=useState(''),[expanded,setExpanded]=useState<string|null>(null);
   const attemptsRef=useRef(attempts);attemptsRef.current=attempts;
   useEffect(()=>{if(!attempts.some(a=>['preparing','submitting','queued','running','query_failed','unknown'].includes(a.status)))return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[attempts]);
@@ -28,14 +28,14 @@ export default function ProductionHistory({accounts,autoSave,attempts,activeTask
       const statusColor=attempt.localResultsMissing||['unknown','query_failed','download_failed'].includes(attempt.status)?'text-amber-600 dark:text-amber-400':['generation_failed','rejected'].includes(attempt.status)?'text-red-500':attempt.status==='saved'?'text-emerald-600 dark:text-emerald-400':'text-slate-500';
       const related=attempt.cardId===activeTaskId,isExact=attempt.id===selectedAttemptId;
       return <article key={attempt.id} className="production-record" data-task-id={attempt.cardId} data-attempt-id={attempt.id} data-task-focused={related} data-attempt-selected={isExact} onPointerDownCapture={()=>onSelect(attempt)} onFocusCapture={()=>onSelect(attempt)}>
-        <button className="record-summary" aria-pressed={isExact} onClick={()=>onSelect(attempt)} title="选择这次生成并在中间预览">
+        <button className="record-summary" aria-pressed={isExact} onClick={()=>onPreview(attempt)} title="选择这次生成并在中间预览">
           <div className="flex items-baseline gap-2"><strong className="text-brand-600">#{attemptNumber(attempt)}{(attempt.sequenceBatch||1)>1&&<span className="ml-1 text-[10px] text-slate-500">B{String(attempt.sequenceBatch).padStart(2,'0')}</span>}</strong><span className={'ml-auto text-[11px] '+statusColor}>{status}</span><span className="key-data whitespace-nowrap">{attempt.usage&&(attempt.usage.coinsReported||attempt.usage.coins>0)?attempt.usage.coins.toLocaleString(undefined,{maximumFractionDigits:2})+' RH':'积分未知'}</span></div>
           <div className="my-1 truncate font-medium" title={attempt.name}>{attempt.name}</div>
           <div className="record-metrics"><span title={duration.source}>{duration.label}：<span className="key-data" data-record-duration>{duration.value}</span></span><time title={new Date(attempt.createdAt).toLocaleString()}>{new Date(attempt.createdAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})}</time></div>
           <div className="key-data mt-1 truncate text-[11px]" data-record-account title={attempt.accountNote}>{attempt.accountNote}</div>
         </button>
         <div className="record-actions">
-          {attempt.outputs.length>0&&<button title="预览这次生成" onClick={()=>onSelect(attempt)}><Eye size={13}/>预览</button>}
+          {attempt.outputs.length>0&&<button title="预览这次生成" onClick={()=>onPreview(attempt)}><Eye size={13}/>预览</button>}
           {['completed','saved','download_failed','generation_failed','interrupted','rejected'].includes(attempt.status)&&<button title="按此输入准备新任务，不自动运行" aria-label="按此输入准备新任务" disabled={busy===attempt.id} onClick={()=>void act(attempt.id,async()=>{const full=await loadAttemptInputs(attempt.id);if(full)onPrepare(full);})}><RotateCcw size={13}/>重做</button>}
           {attempt.taskId&&['queued','running','query_failed'].includes(attempt.status)&&<button disabled={busy===attempt.id} onClick={()=>void act(attempt.id,()=>recoverAttempt(attempt.id,accounts,autoSave))}>继续查询</button>}
           {attempt.outputs.length>0&&(attempt.status!=='saved'||attempt.localResultsMissing)&&<button title="只保存结果文件，不重新生成" aria-label="保存结果 / 重试下载" disabled={busy===attempt.id} onClick={()=>void act(attempt.id,()=>archiveAttempt(attempt.id))}><Download size={13}/>{attempt.localResultsMissing?'补存':'保存'}</button>}
