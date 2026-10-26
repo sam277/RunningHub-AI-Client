@@ -1,6 +1,6 @@
 import { ApiKeyEntry, NodeInfo, PendingFilesMap, TaskOutput, WorkflowRunOptions } from '../types';
 import { executeWorkflowTask, ExecuteTaskRequest, TaskExecutionError, TaskCancelledError, RemoteTaskCancelledError, TaskUsageStats, selectPendingFilesForTask, parseTaskUsage } from './taskExecutor';
-import { cancelTask, isCapacityLimitedError, queryTaskResult } from './api';
+import { cancelTask, getApiQueueStatus, isTaskNotFoundError, isCapacityLimitedError, queryTaskResult } from './api';
 import { getResolvedRunningHubRegion } from './runningHubRegion';
 import { saveFileFromUrl } from './autoSaveService';
 import { listWorkspaceData, readWorkspaceData, writeWorkspaceData, patchWorkspaceFields, allocateGenerationNumber, listWorkspaceMetadata, readWorkspaceMetadata } from './workspaceStorage';
@@ -8,8 +8,10 @@ import { flushLocalSettings } from './localPersistence';
 
 export type AttemptStatus = 'preparing' | 'submitting' | 'unknown' | 'queued' | 'running' | 'query_failed' | 'generation_failed' | 'rejected' | 'interrupted' | 'completed' | 'downloading' | 'download_failed' | 'saved' | 'cancelled';
 export interface ProductionAttempt {
+  queueInfo?:{queued?:number;running?:number;checkedAt:number};
   cancelRequestedAt?:number;
   cancelSentAt?:number|null;
+  cancelAcceptedAt?:number;
   cancelError?:string|null;
   parentAttemptId?: string;
   sourceDigest?:string;
@@ -34,7 +36,26 @@ export const ATTEMPT_LABELS: Record<AttemptStatus, string> = {
 };
 const signature = async (key: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key.trim()))), n => n.toString(16).padStart(2,'0')).join('');
 export const isCancellableAttempt = (attempt:ProductionAttempt) => ['preparing','submitting','unknown','queued','running','query_failed'].includes(attempt.status);
-export const cancellationPending = (attempt?:ProductionAttempt) => !!attempt?.cancelRequestedAt && !!attempt && isCancellableAttempt(attempt) && !attempt.cancelError;
+export const CANCELLATION_CONFIRM_MS=30000;
+export const cancellationPending = (attempt?:ProductionAttempt) => !!attempt?.cancelRequestedAt && !!attempt && isCancellableAttempt(attempt) && attempt.status!=='unknown' && !attempt.cancelError && Date.now()-(attempt.cancelSentAt||attempt.cancelRequestedAt)<CANCELLATION_CONFIRM_MS;
+export const expireCancellation=async(id:string)=>{
+  const current=await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);
+  if(current?.cancelRequestedAt&&isCancellableAttempt(current)&&!current.cancelError&&Date.now()-(current.cancelSentAt||current.cancelRequestedAt)>=CANCELLATION_CONFIRM_MS){
+    await patchCancellation(id,{cancelError:'平台暂未确认取消，请刷新状态或重试取消；当前任务不会自动重发。'});
+  }
+};
+const queueChecks=new Map<string,{at:number;result:ReturnType<typeof getApiQueueStatus>}>();
+const observeQueue=(attempt:ProductionAttempt,apiKey:string)=>{
+  if(attempt.status!=='queued')return;
+  const key=attempt.region+':'+attempt.accountId;
+  let check=queueChecks.get(key);
+  if(!check||Date.now()-check.at>15000){check={at:Date.now(),result:getApiQueueStatus(apiKey,attempt.region==='cn'?'cn':'global')};queueChecks.set(key,check);}
+  const at=check.at;
+  const count=(value:unknown)=>String(value??'').trim()!==''&&Number.isFinite(Number(value))&&Number(value)>=0?Math.floor(Number(value)):undefined;
+  void check.result.then(async queue=>{
+    await patchWorkspaceFields('attempt:'+attempt.id,{queueInfo:{queued:count(queue.queuedCount),running:count(queue.runningCount),checkedAt:at}});notify();
+  }).catch(()=>{});
+};
 const cancelling = new Map<string,Promise<void>>();
 const patchCancellation = async (id:string,fields:Record<string,unknown>) => { await patchWorkspaceFields('attempt:'+id,{...fields,updatedAt:Date.now()});notify(); };
 const sendCancellation = (id:string,accounts:ApiKeyEntry[]):Promise<void> => {
@@ -46,7 +67,7 @@ const sendCancellation = (id:string,accounts:ApiKeyEntry[]):Promise<void> => {
       const account=accounts.find(a=>a.id===attempt.accountId);
       if(!account?.apiKey.trim() || (attempt.accountSignature && await signature(account.apiKey)!==attempt.accountSignature))throw new Error('请恢复本次任务原账号的 API，才能取消平台任务');
       await cancelTask(account.apiKey,attempt.taskId,attempt.region==='cn'?'cn':'global');
-      await patchCancellation(id,{cancelSentAt:Date.now(),cancelError:null});
+      await patchCancellation(id,{cancelSentAt:Date.now(),cancelAcceptedAt:Date.now(),cancelError:null});
     }catch(error:any){await patchCancellation(id,{cancelError:error?.message||'取消请求失败，任务仍会继续查询'});throw error;}
   })();
   cancelling.set(id,operation);void operation.finally(()=>cancelling.delete(id)).catch(()=>{});return operation;
@@ -55,7 +76,7 @@ export async function requestAttemptCancellation(id:string,accounts:ApiKeyEntry[
   const attempt=await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);
   if(!attempt||!isCancellableAttempt(attempt))return;
   // Keep intent outside saveAttempt's mutable fields: an older query must never erase it.
-  await patchCancellation(id,{cancelRequestedAt:Date.now(),cancelError:null,...(attempt.cancelError?{cancelSentAt:null}:{})});
+  await patchCancellation(id,{cancelRequestedAt:Date.now(),cancelError:null,...(attempt.cancelError?{cancelAcceptedAt:attempt.cancelAcceptedAt||attempt.cancelSentAt||undefined,cancelSentAt:null}:{})});
   if(!attempt.taskId)uploadControllers.get(id)?.abort();
   if(!attempt.taskId && !active.has(id) && attempt.status==='preparing'){
     await saveAttempt({...attempt,status:'cancelled',timings:{...attempt.timings,failedAt:Date.now()},error:undefined});return;
@@ -146,11 +167,14 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
       callbacks: {
         ...request.callbacks,
         onStatusChange: async status => {
-          request.callbacks?.onStatusChange?.(status);
+          await expireCancellation(id);
+          await request.callbacks?.onStatusChange?.(status);
           if (attempt.taskId && (status === 'RUNNING' || status === 'QUEUED') && attempt.status !== (status === 'RUNNING' ? 'running' : 'queued')) {
             attempt = await saveAttempt({ ...attempt, status: status === 'RUNNING' ? 'running' : 'queued',timings:{...attempt.timings,runningObservedAt:status==='RUNNING'?(attempt.timings?.runningObservedAt||Date.now()):attempt.timings?.runningObservedAt} });
           }
+          if(status==='QUEUED')observeQueue(attempt,request.apiKey);
         },
+        onQueryMissing:async()=>{await cancelling.get(id)?.catch(()=>{});const current=await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);return !!(current?.cancelAcceptedAt||current?.cancelSentAt);},
         beforeSubmit: async nodes => {
           await request.callbacks?.beforeSubmit?.(nodes);
           if((await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id))?.cancelRequestedAt)throw new TaskCancelledError();
@@ -176,6 +200,7 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
     const status: AttemptStatus = error instanceof RemoteTaskCancelledError ? 'cancelled' : error instanceof TaskCancelledError ? (attempt.taskId ? 'query_failed' : attempt.status === 'submitting' ? 'unknown' : 'cancelled') :
       attempt.taskId ? (error instanceof TaskExecutionError && error.phase === 'generation' ? 'generation_failed' : 'query_failed') :
       attempt.status === 'submitting' ? (isCapacityLimitedError(error) || isAccountUnavailableError(error) || (/^4\d\d$/.test(String(error?.code))) ? 'rejected' : 'unknown') : 'interrupted';
+    if(attempt.taskId&&status==='query_failed'&&(await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id))?.cancelRequestedAt)await patchCancellation(id,{cancelError:'状态查询中断，取消尚未确认；可刷新状态或重试取消。'}).catch(()=>{});
     await saveAttempt({ ...attempt, status,timings:{...attempt.timings,failedAt:['generation_failed','rejected','interrupted','cancelled'].includes(status)?Date.now():undefined}, error: status==='cancelled'?undefined:error?.message || '执行中断' }).catch(() => {});
     if (attempt.taskId && !(error instanceof TaskExecutionError) && !(error instanceof TaskCancelledError)) throw new TaskExecutionError(attempt.taskId, error);
     throw error;
@@ -184,6 +209,7 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
 
 // Query only. This path cannot call a submit endpoint.
 export async function recoverAttempt(id: string, accounts: ApiKeyEntry[], autoSave: boolean) {
+  await expireCancellation(id);
   if (active.has(id) || recovering.has(id)) return;
   recovering.add(id);
   try {
@@ -211,9 +237,15 @@ export async function recoverAttempt(id: string, accounts: ApiKeyEntry[], autoSa
         timings:{...attempt.timings,generationObservedAt:result.status==='SUCCESS'?(attempt.timings?.generationObservedAt||Date.now()):attempt.timings?.generationObservedAt,failedAt:['FAILED','CANCELLED'].includes(result.status)?Date.now():attempt.timings?.failedAt},
         usage: result.status === 'SUCCESS' ? parseTaskUsage(result.usage) || attempt.usage : attempt.usage,
         error: result.status === 'FAILED' ? result.errorMessage || result.failedReason?.exception_message || '生成失败' : undefined });
+      if(attempt.status==='queued')observeQueue(attempt,account.apiKey);
       if (attempt.status === 'completed' && autoSave) return archiveAttempt(id);
       return attempt;
-    } catch (error: any) { return saveAttempt({ ...attempt, status: 'query_failed', error: error?.message || '查询失败' }); }
+    } catch (error: any) {
+      const latest=await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);
+      if(isTaskNotFoundError(error)&&(latest?.cancelAcceptedAt||latest?.cancelSentAt))return saveAttempt({...attempt,status:'cancelled',timings:{...attempt.timings,failedAt:Date.now()},error:undefined});
+      if(latest?.cancelRequestedAt)await patchCancellation(id,{cancelError:'取消尚未确认：'+(error?.message||'查询失败')});
+      return saveAttempt({ ...attempt, status: 'query_failed', error: error?.message || '查询失败' });
+    }
   } finally { recovering.delete(id); }
 }
 

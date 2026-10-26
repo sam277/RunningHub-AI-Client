@@ -101,3 +101,12 @@ test('reveal resolves the real saved file and propagates Explorer errors through
  selected=undefined;const outside=await fetch(base+'/__rh/reveal',{method:'POST',headers,body:JSON.stringify({path:root})});assert.equal(outside.status,400);assert.equal(selected,undefined);
  }finally{await new Promise(resolve=>server.close(resolve));await api.close();await fs.rm(root,{recursive:true,force:true});}
 });
+
+test('a stale browser cannot return a confirmed cancellation to running or queued',async()=>{
+ const f=await fixture();try{
+  await f.store.write('attempt:cancelled',{id:'cancelled',status:'cancelled',taskId:'remote',outputs:[],files:[]});
+  await f.store.patch('attempt:cancelled',{status:'queued',error:'stale response'});assert.equal((await f.store.read('attempt:cancelled')).status,'cancelled');
+  await f.store.patch('attempt:cancelled',{status:'query_failed'});assert.equal((await f.store.read('attempt:cancelled')).status,'cancelled');
+  await f.store.patch('attempt:cancelled',{decision:'redo'});assert.equal((await f.store.read('attempt:cancelled')).decision,'redo');
+ }finally{await f.close();}
+});

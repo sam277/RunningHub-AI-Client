@@ -67,8 +67,9 @@ const normalizeTaskStatus = (status: any): TaskRuntimeStatus => {
       return 'RUNNING';
     case 'QUEUED':
     case 'PENDING':
-    default:
       return 'QUEUED';
+    default:
+      throw new Error('平台返回了无法识别的任务状态，未将其当作排队');
   }
 };
 
@@ -105,13 +106,18 @@ const normalizeCover = (cover: any) => ({
 });
 
 const normalizeNodeInfo = (node: any): NodeInfo => {
-  const rawFieldType = String(node?.fieldType || 'STRING').toUpperCase();
+  const rawFieldType = String(node?.fieldType || 'STRING').trim().toUpperCase();
   let fieldType: NodeInfo['fieldType'];
 
   switch (rawFieldType) {
     case 'COMBO':
       fieldType = 'LIST';
       break;
+    case 'INTEGER': fieldType='INT';break;
+    case 'DOUBLE':
+    case 'NUMBER': fieldType='FLOAT';break;
+    case 'TEXT': fieldType='STRING';break;
+    case 'FILE':
     case 'IMAGE':
     case 'AUDIO':
     case 'VIDEO':
@@ -513,6 +519,7 @@ export const cancelTask = async (apiKey: string, taskId: string, region: Running
   if (!isWrappedApiResponse(json) || json.code !== 0) throw new Error(json?.msg || '平台未接受取消请求');
 };
 
+export const isTaskNotFoundError=(error:unknown)=>['1004','807'].includes(String((error as {code?:unknown})?.code));
 export const queryTaskResultV2 = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResultV2> => {
   const region = resolvedRegion || await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/openapi/v2/query`;
@@ -523,11 +530,13 @@ export const queryTaskResultV2 = async (apiKey: string, taskId: string, resolved
       ...buildAuthHeaders(apiKey),
     },
     body: JSON.stringify({ taskId }),
+    signal:AbortSignal.timeout(12000),
   });
 
   const json = await handleResponse<any>(response);
   const body = isWrappedApiResponse(json) ? json.data : json;
 
+  if (['1004','807'].includes(String(body?.errorCode))) throw createRunningHubError(body.errorCode,body.errorMessage||'平台任务不存在或已过期');
   if (!body || !body.taskId) {
     throw new Error('Invalid v2 query response');
   }
@@ -554,6 +563,7 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string, resolvedR
       ...buildAuthHeaders(apiKey),
     },
     body: JSON.stringify({ apiKey, taskId }),
+    signal:AbortSignal.timeout(12000),
   });
 
   if (!response.ok) {
@@ -562,6 +572,7 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string, resolvedR
 
   const json = await response.json();
   const code = json.code;
+  if(code===807)throw createRunningHubError(code,json.msg||'平台任务不存在或已过期');
   let responseData: TaskOutput[] | { failedReason: any } = [];
   let usage: QueryTaskResponse['usage'];
 
@@ -678,8 +689,8 @@ export const getApiQueueStatus = async (apiKey: string, resolvedRegion?: Running
   return {
     apiKeyType: json.data.apiKeyType || '',
     concurrentLimit: Math.max(1, Math.floor(Number(json.data.concurrentLimit) || 1)),
-    runningCount: String(json.data.runningCount ?? '0'),
-    queuedCount: String(json.data.queuedCount ?? '0'),
+    runningCount: String(json.data.runningCount ?? ''),
+    queuedCount: String(json.data.queuedCount ?? ''),
     totalCurrentTasks: String(json.data.totalCurrentTasks ?? ((Number(json.data.runningCount) || 0) + (Number(json.data.queuedCount) || 0))),
   };
 };

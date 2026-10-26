@@ -1,4 +1,4 @@
-import { attemptDuration, timingDetails } from '../../services/productionPresentation';
+import { attemptDuration, timingDetails, queueDescription, QUEUE_SCOPE_HINT } from '../../services/productionPresentation';
 import React, { useEffect, useState, useRef } from 'react';
 import { ChevronDown, ChevronRight, Eye, RotateCcw, FolderOpen, Download } from 'lucide-react';
 import { ApiKeyEntry } from '../../types';
@@ -12,7 +12,7 @@ export default function ProductionHistory({onCancel,accounts,autoSave,attempts,a
   useEffect(()=>{if(!attempts.some(a=>['preparing','submitting','queued','running','query_failed','unknown'].includes(a.status)))return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[attempts]);
   useEffect(()=>{
     let stopped=false;
-    const recover=async()=>{try{for(const attempt of attemptsRef.current){if(stopped)return;await recoverAttempt(attempt.id,accounts,autoSave);}}catch{if(!stopped)setError('接续查询暂不可用，请稍后重试。');}};
+    const recover=async()=>{const tasks=attemptsRef.current.filter(a=>['preparing','submitting','queued','running','query_failed','unknown','downloading'].includes(a.status));const results=await Promise.allSettled(tasks.map(a=>recoverAttempt(a.id,accounts,autoSave)));if(!stopped&&results.some(r=>r.status==='rejected'))setError('部分任务查询暂不可用，可单独重试。');};
     const timer=window.setInterval(()=>void recover(),10000);void recover();
     return()=>{stopped=true;window.clearInterval(timer);};
   },[accounts,autoSave,attempts.length]);
@@ -32,13 +32,14 @@ export default function ProductionHistory({onCancel,accounts,autoSave,attempts,a
           <div className="flex items-baseline gap-2"><strong className="text-brand-600">#{attemptNumber(attempt)}{(attempt.sequenceBatch||1)>1&&<span className="ml-1 text-[10px] text-slate-500">B{String(attempt.sequenceBatch).padStart(2,'0')}</span>}</strong><span className={'ml-auto text-[11px] '+statusColor}>{status}</span><span className="key-data whitespace-nowrap">{attempt.usage&&(attempt.usage.coinsReported||attempt.usage.coins>0)?attempt.usage.coins.toLocaleString(undefined,{maximumFractionDigits:2})+' RH':'积分未知'}</span></div>
           <div className="my-1 truncate font-medium" title={attempt.name}>{attempt.name}</div>
           <div className="record-metrics"><span title={duration.source}>{duration.label}：<span className="key-data" data-record-duration>{duration.value}</span></span><time title={new Date(attempt.createdAt).toLocaleString()}>{new Date(attempt.createdAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})}</time></div>
+          {attempt.status==='queued'&&<div className="mt-1 text-[10px] text-blue-500" title={QUEUE_SCOPE_HINT}>{queueDescription(attempt)}</div>}
           <div className="key-data mt-1 truncate text-[11px]" data-record-account title={attempt.accountNote}>{attempt.accountNote}</div>
         </button>
         <div className="record-actions">
           {attempt.outputs.length>0&&<button title="预览这次生成" onClick={()=>onPreview(attempt)}><Eye size={13}/>预览</button>}
           {['completed','saved','download_failed','generation_failed','interrupted','rejected','cancelled'].includes(attempt.status)&&<button title="按此输入准备新任务，不自动运行" aria-label="按此输入准备新任务" disabled={busy===attempt.id} onClick={()=>void act(attempt.id,async()=>{const full=await loadAttemptInputs(attempt.id);if(full)onPrepare(full);})}><RotateCcw size={13}/>重做</button>}
           {isCancellableAttempt(attempt)&&<button disabled={busy===attempt.id||cancellationPending(attempt)} onClick={()=>void act(attempt.id,()=>onCancel(attempt.cardId))}>{cancellationPending(attempt)?'取消中':attempt.cancelError?'重试取消':'取消'}</button>}
-          {attempt.taskId&&['query_failed'].includes(attempt.status)&&<button disabled={busy===attempt.id} onClick={()=>void act(attempt.id,()=>recoverAttempt(attempt.id,accounts,autoSave))}>继续查询</button>}
+          {attempt.taskId&&['query_failed','queued','running'].includes(attempt.status)&&<button disabled={busy===attempt.id} onClick={()=>void act(attempt.id,()=>recoverAttempt(attempt.id,accounts,autoSave))}>刷新状态</button>}
           {attempt.outputs.length>0&&(attempt.status!=='saved'||attempt.localResultsMissing)&&<button title="只保存结果文件，不重新生成" aria-label="保存结果 / 重试下载" disabled={busy===attempt.id} onClick={()=>void act(attempt.id,()=>archiveAttempt(attempt.id))}><Download size={13}/>{attempt.localResultsMissing?'补存':'保存'}</button>}
           {availableFile&&localSession()&&<button title="打开文件夹并选中结果" aria-label="定位文件" disabled={busy===attempt.id} onClick={()=>void reveal(attempt,availableFile.path)}><FolderOpen size={13}/>{busy===attempt.id?'打开中…':'定位'}</button>}
           <button className="ml-auto" aria-expanded={expanded===attempt.id} title="参数、文件位置与执行详情" onClick={()=>{setExpanded(expanded===attempt.id?null:attempt.id);setTaskId('');}}>{expanded===attempt.id?<ChevronDown size={13}/>:<ChevronRight size={13}/>}详情</button>

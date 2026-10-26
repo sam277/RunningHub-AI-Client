@@ -3,7 +3,7 @@ export interface NodeInfo {
   nodeName: string;
   fieldName: string;
   fieldValue: string;
-  fieldType: 'IMAGE' | 'AUDIO' | 'VIDEO' | 'STRING' | 'INT' | 'FLOAT' | 'LIST' | 'SWITCH' | 'BOOLEAN';
+  fieldType: 'IMAGE' | 'AUDIO' | 'VIDEO' | 'FILE' | 'STRING' | 'INT' | 'FLOAT' | 'LIST' | 'SWITCH' | 'BOOLEAN';
   description?: string;
   descriptionEn?: string;
   fieldData?: string | Record<string, any> | any[];

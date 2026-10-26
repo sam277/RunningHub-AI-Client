@@ -20,3 +20,10 @@ export function timingDetails(attempt:ProductionAttempt):[string,string][] {
   add('归档',t.archiveStartedAt,t.archivedAt);add('总等待',attempt.createdAt,t.generationObservedAt||t.failedAt);
   return rows;
 }
+
+export function queueDescription(attempt?:ProductionAttempt):string {
+  if(attempt?.status!=='queued')return '';
+  const count=attempt.queueInfo?.queued;
+  return typeof count==='number'&&Number.isFinite(count)?'账号排队 '+count+' 项':'排队数量未提供';
+}
+export const QUEUE_SCOPE_HINT='仅当前 API 账号的排队任务数；平台未提供全站排队人数或本任务前方人数。';

@@ -24,3 +24,10 @@ test('record durations distinguish reported zero, observed waiting and unknown h
  assert.equal(presentation.attemptDuration(observed).value,'1分');assert.equal(presentation.attemptDuration(observed).label,'总等待');
  assert.deepEqual(presentation.timingDetails(observed),[['总等待','1分']]);assert.equal(presentation.formatDuration(3600),'1小时');
 });
+
+test('queue display is scoped to account tasks and never invents a global rank',()=>{
+ assert.equal(presentation.queueDescription({status:'queued',queueInfo:{queued:3}}),'账号排队 3 项');
+ assert.equal(presentation.queueDescription({status:'queued'}),'排队数量未提供');
+ assert.equal(presentation.queueDescription({status:'running',queueInfo:{queued:3}}),'');
+ assert.match(presentation.QUEUE_SCOPE_HINT,/不是|未提供/);
+});

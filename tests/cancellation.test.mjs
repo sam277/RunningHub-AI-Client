@@ -65,6 +65,36 @@ test('durable cancellation covers submit races, rejection/retry, completed races
    await app.requestAttemptCancellation(id,[account]);assert.ok(await pending instanceof app.RemoteTaskCancelledError);
    const after=await record('retry');assert.equal(after.status,'cancelled');assert.equal(after.cancelError,null);assert.equal(cancels,2);assert.equal(submits,1);
   });
+  await t.test('accepted cancellation followed by the real missing-task responses is terminal',async()=>{
+   let removed=false;
+   platform=async url=>{
+    if(url.endsWith('/ai-app/run'))return json({code:0,data:{taskId:'removed-task',taskStatus:'RUNNING'}});
+    if(url.endsWith('/cancel')){removed=true;return json({code:0,msg:'success'});}
+    if(url.endsWith('/outputs'))return json({code:807,msg:'APIKEY_TASK_NOT_FOUND',data:null});
+    return json({taskId:'removed-task',status:removed?'':'RUNNING',errorCode:removed?'1004':'',errorMessage:removed?'Task not found':'',results:null});
+   };
+   const pending=run('removed');await wait(async()=>!!(await record('removed'))?.taskId);
+   await app.requestAttemptCancellation((await record('removed')).id,[account]);assert.ok(await pending instanceof app.RemoteTaskCancelledError);
+   assert.equal((await record('removed')).status,'cancelled');
+  });
+  await t.test('missing task without a cancellation receipt stays unresolved',async()=>{
+   platform=async url=>url.endsWith('/ai-app/run')?json({code:0,data:{taskId:'lost-task',taskStatus:'RUNNING'}}):url.endsWith('/outputs')?json({code:807,msg:'APIKEY_TASK_NOT_FOUND'}):json({taskId:'lost-task',status:'',errorCode:'1004',errorMessage:'Task not found'});
+   await run('lost');assert.equal((await record('lost')).status,'query_failed');assert.equal(await app.hasUnresolvedAttempt('lost'),true);
+  });
+  await t.test('confirmation deadline unlocks retry while preserving the original acceptance receipt',async()=>{
+   const source=await record('removed'),id=crypto.randomUUID();
+   await app.writeWorkspaceData('attempt:'+id,{...source,id,cardId:'timeout',status:'queued',cancelRequestedAt:Date.now()-60000,cancelSentAt:Date.now()-60000,cancelError:null});
+   await app.expireCancellation(id);const timed=await record('timeout');assert.ok(timed.cancelError);assert.equal(app.cancellationPending(timed),false);
+   platform=async url=>url.endsWith('/cancel')?json({code:807,msg:'APIKEY_TASK_NOT_FOUND'}):url.endsWith('/outputs')?json({code:807,msg:'APIKEY_TASK_NOT_FOUND'}):json({taskId:'removed-task',status:'',errorCode:'1004',errorMessage:'Task not found'});
+   await assert.rejects(app.requestAttemptCancellation(id,[account]));assert.ok((await record('timeout')).cancelAcceptedAt);
+   await app.recoverAttempt(id,[account],false);assert.equal((await record('timeout')).status,'cancelled');
+  });
+  await t.test('reopening an old accepted cancellation resolves disappearance without another cancel call',async()=>{
+   const source=await record('removed'),id=crypto.randomUUID();
+   await app.writeWorkspaceData('attempt:'+id,{...source,id,cardId:'old-recovery',status:'queued',cancelAcceptedAt:undefined,cancelRequestedAt:Date.now()-60000,cancelSentAt:Date.now()-60000,cancelError:null});
+   platform=async url=>{assert.ok(!url.endsWith('/cancel'));return url.endsWith('/outputs')?json({code:807,msg:'APIKEY_TASK_NOT_FOUND'}):json({taskId:'removed-task',status:'',errorCode:'1004',errorMessage:'Task not found'});};
+   await app.recoverAttempt(id,[account],false);assert.equal((await record('old-recovery')).status,'cancelled');
+  });
   await t.test('completion racing cancellation retains the generated result',async()=>{
    let finish=false;
    platform=async url=>{

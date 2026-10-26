@@ -209,6 +209,8 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
   useEffect(()=>{void refreshAttempts();const changed=()=>void refreshAttempts();window.addEventListener('rh-production-change',changed);return()=>window.removeEventListener('rh-production-change',changed);},[]);
   const focusTask=(cardId:string,attemptId?:string)=>{if((selectedCardId||cards[0]?.id)!==cardId&&!attemptId)setSelectedAttemptId(null);setSelectedCardId(cardId);if(attemptId)setSelectedAttemptId(attemptId);};
 
+  const [overviewEditId,setOverviewEditId]=useState<string|null>(null);
+  const [deleteRequest,setDeleteRequest]=useState<string|null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'batch' | 'cards'>(() => {
     try { return settingsStorage.getItem('rh_multitask_view') === 'cards' ? 'cards' : settingsStorage.getItem('rh_multitask_view') === 'batch' ? 'batch' : 'list'; } catch { return 'list'; }
   });
@@ -1288,6 +1290,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
 
   return (
     <div className="production-workbench flex h-full w-full flex-col bg-slate-50 dark:bg-[#0F1115]">
+      {deleteRequest&&<div className="text-dialog-backdrop delete-dialog"><div role="alertdialog" aria-label="确认删除任务" className="delete-task-dialog"><p>删除这个任务配置？</p><small>历史记录与结果保留。</small><div><button onClick={()=>setDeleteRequest(null)}>保留</button><button disabled={cardIsBusy(deleteRequest)} className="text-red-500" onClick={()=>{handleRemoveCard(deleteRequest);setDeleteRequest(null);if(overviewEditId===deleteRequest)setOverviewEditId(null);}}>确认删除</button></div></div></div>}
       {editingFavorite && <AppLibraryEditor createOnly initial={editingFavorite} favorites={favorites} onSave={onUpdateFavorites} onClose={() => setEditingFavorite(null)} />}
       {reuse && <ParameterReuseDialog nodes={buildSnapshotForCard(cards.find(card => card.id === reuse.ids[0])!).nodes.filter(node => reuse.ids.every(id => buildSnapshotForCard(cards.find(card => card.id === id)!).nodes.some(other => other.nodeId === node.nodeId && other.fieldName === node.fieldName && other.fieldType === node.fieldType)))} count={reuse.ids.length} variant={reuse.variant} onApply={applyReuse} onClose={() => setReuse(null)} />}
       {templateCardId && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"><div role="dialog" aria-label="保存任务模板" className="w-full max-w-lg space-y-4 rounded-xl bg-white p-6 dark:bg-[#161920]">
@@ -1475,12 +1478,12 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
               className={`min-w-0 flex-1 rounded-xl border p-3 text-left ${activeCardId === card.id ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-[#161920]'}`}>
               <div className="truncate text-sm font-medium">{index+1}. {card.name || card.webAppInfo?.webappName || card.webappId || '新任务'}</div>
               <div data-status={taskState(card,taskAttempt(card.id))} className="task-state mt-1 truncate text-xs text-slate-500" title={card.run.progressText}>{taskStatus(card,taskAttempt(card.id))}{card.run.totalUnits>0?' · '+card.run.completedUnits+'/'+card.run.totalUnits:''}</div>
-            </button><button className="mt-3 shrink-0 text-slate-500" disabled={cardIsBusy(card.id)} aria-label={`删除导航任务 ${index+1}`} title="删除任务配置，保留记录和结果" onClick={()=>handleRemoveCard(card.id)}><Trash2 size={14}/></button>
+            </button><button className="mt-3 shrink-0 text-slate-500" disabled={cardIsBusy(card.id)} aria-label={`删除导航任务 ${index+1}`} title="删除任务配置，保留记录和结果" onClick={()=>setDeleteRequest(card.id)}><Trash2 size={14}/></button>
           </div>)}
           <p className="mt-3 text-xs leading-5 text-slate-500">同应用多素材：打开任务内的批量设置，一次导入多张图片。不同应用：新建任务后分别配置。</p>
         </aside>}
       <div className="production-center"><div hidden={!activeCard&&!!activeCardId} className={viewMode==='cards'?"task-editing-area min-h-0 min-w-0 overflow-auto p-3":"task-editing-area production-editor-area"}>
-        {viewMode==='batch'&&<ComparisonTable items={comparisonItems} activeTaskId={activeCardId} selection={selection} onFocus={focusTask} onSelect={(id,value)=>setSelection(previous=>{const next=new Set(previous);value?next.add(id):next.delete(id);return next;})} onName={(id,name)=>updateCard(id,current=>({...current,name}))} onChange={(id,node,value,file)=>{const card=cards.find(c=>c.id===id);if(card)changeTableField(card,node,value,file);}} onBulk={applyComparisonField} onEdit={id=>{focusTask(id);setViewMode('list');}} onDuplicate={handleDuplicateCard} onDelete={handleRemoveCard} onRun={runOne} onStop={cancelCard} onPlus={id=>updateCard(id,current=>({...current,instanceType:current.instanceType==='plus'?'default':'plus'}))}/>}
+        {viewMode==='batch'&&<ComparisonTable items={comparisonItems} activeTaskId={activeCardId} selection={selection} onFocus={focusTask} onSelect={(id,value)=>setSelection(previous=>{const next=new Set(previous);value?next.add(id):next.delete(id);return next;})} onName={(id,name)=>updateCard(id,current=>({...current,name}))} onChange={(id,node,value,file)=>{const card=cards.find(c=>c.id===id);if(card)changeTableField(card,node,value,file);}} onBulk={applyComparisonField} onEdit={id=>{focusTask(id);setViewMode('list');}} onDuplicate={handleDuplicateCard} onDelete={setDeleteRequest} onRun={runOne} onStop={cancelCard} onPlus={id=>updateCard(id,current=>({...current,instanceType:current.instanceType==='plus'?'default':'plus'}))}/>}
         {cards.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-8 py-12 text-center dark:border-slate-700 dark:bg-[#161920]">
@@ -1492,9 +1495,9 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
         ) : (
           <div className={viewMode === 'cards' ? 'overview-grid' : viewMode==='batch'?'hidden':'h-full'}>
             {cards.map((card,index) => (
-              <div key={card.id} data-task-id={card.id} data-task-focused={activeCardId===card.id} onPointerDownCapture={()=>focusTask(card.id)} onFocusCapture={()=>focusTask(card.id)} className={'task-surface '+(viewMode !== 'cards' ? (card.id === activeCardId ? 'h-full' : 'hidden') : '')}>
-              {viewMode==='cards'&&<TaskOverview ordinal={index+1} busy={cardIsBusy(card.id)} card={card} snapshot={buildSnapshotForCard(card)} attempt={taskAttempt(card.id)} onPlus={()=>updateCard(card.id,current=>({...current,instanceType:current.instanceType==='plus'?'default':'plus'}))} appName={appName(card)} selected={selection.has(card.id)} onSelect={value=>setSelection(previous=>{const next=new Set(previous);value?next.add(card.id):next.delete(card.id);return next;})} onName={name=>updateCard(card.id,current=>({...current,name}))} onRun={()=>runOne(card.id)} onStop={()=>cancelCard(card.id)} onPreview={()=>{const attempt=attempts.find(a=>a.cardId===card.id&&a.outputs.length>0);if(attempt)previewAttempt(attempt);}} onChange={(node,value)=>changeTableField(card,node,value)} onDuplicate={()=>handleDuplicateCard(card.id)} onRemove={()=>handleRemoveCard(card.id)} onEdit={()=>{focusTask(card.id);setViewMode('list');}}/>}
-              <div className={viewMode==='cards'?'hidden':'h-full'}><MultiTaskCard
+              <div key={card.id} data-task-id={card.id} data-task-focused={activeCardId===card.id} onPointerDownCapture={()=>focusTask(card.id)} onFocusCapture={()=>focusTask(card.id)} className={'task-surface '+(viewMode==='cards'&&(overviewEditId===card.id||!card.isConnected)?'overview-expanded ':'')+(viewMode !== 'cards' ? (card.id === activeCardId ? 'h-full' : 'hidden') : '')}>
+              {viewMode==='cards'&&<TaskOverview editing={overviewEditId===card.id||!card.isConnected} ordinal={index+1} busy={cardIsBusy(card.id)} card={card} snapshot={buildSnapshotForCard(card)} attempt={taskAttempt(card.id)} onPlus={()=>updateCard(card.id,current=>({...current,instanceType:current.instanceType==='plus'?'default':'plus'}))} appName={appName(card)} selected={selection.has(card.id)} onSelect={value=>setSelection(previous=>{const next=new Set(previous);value?next.add(card.id):next.delete(card.id);return next;})} onName={name=>updateCard(card.id,current=>({...current,name}))} onRun={()=>runOne(card.id)} onStop={()=>cancelCard(card.id)} onPreview={()=>{const attempt=attempts.find(a=>a.cardId===card.id&&a.outputs.length>0);if(attempt)previewAttempt(attempt);}} onChange={(node,value,file)=>changeTableField(card,node,value,file)} onDuplicate={()=>handleDuplicateCard(card.id)} onRemove={()=>setDeleteRequest(card.id)} onEdit={()=>{focusTask(card.id);setOverviewEditId(current=>current===card.id?null:card.id);}}/>}
+              <div className={viewMode==='cards'?(overviewEditId===card.id||!card.isConnected?'overview-inline-editor':'hidden'):'h-full'}><MultiTaskCard
                 appName={appName(card)}
                 executionStatus={taskStatus(card,taskAttempt(card.id))} executionState={taskState(card,taskAttempt(card.id))}
                 onPreview={()=>{const attempt=attempts.find(a=>a.cardId===card.id&&a.outputs.length>0);if(attempt)previewAttempt(attempt);}}
@@ -1519,7 +1522,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
                 }}
                 onWebappIdChange={handleWebappIdChange}
                 onLoad={handleLoadCard}
-                onRemove={handleRemoveCard}
+                onRemove={setDeleteRequest}
                 onDuplicate={handleDuplicateCard}
                 onRun={handleRunCard}
                 onCancel={cancelCard}

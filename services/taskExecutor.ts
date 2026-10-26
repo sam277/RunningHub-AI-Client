@@ -1,6 +1,6 @@
 import { saveMultipleFiles } from './autoSaveService';
 import { connectTaskProgress, TaskProgressSnapshot } from './taskProgress';
-import { queryTaskResult, submitTask, uploadFile } from './api';
+import { queryTaskResult, isTaskNotFoundError, submitTask, uploadFile } from './api';
 import { InstanceType, NodeInfo, PendingFilesMap, PromptTips, TaskOutput, WorkflowRunOptions } from '../types';
 
 const DEFAULT_POLL_INTERVAL_MS = 3500;
@@ -37,6 +37,7 @@ export interface TaskUsageStats {
 }
 
 export interface ExecuteTaskCallbacks {
+  onQueryMissing?:()=>Promise<boolean>;
   beforeSubmit?: (nodes: NodeInfo[]) => Promise<void>;
   onAccepted?: (taskId: string, nodes: NodeInfo[]) => Promise<void>;
   onGenerationResult?: (outputs: TaskOutput[]) => Promise<void>;
@@ -302,7 +303,9 @@ export const executeWorkflowTask = async ({
   try {
     while (true) {
       ensureNotCancelled(control);
-      const result = await queryTaskResult(apiKey, submitResult.taskId);
+      let result;
+      try{result=await queryTaskResult(apiKey,submitResult.taskId);}
+      catch(error){if(isTaskNotFoundError(error)&&await callbacks?.onQueryMissing?.())throw new RemoteTaskCancelledError(submitResult.taskId);throw error;}
       ensureNotCancelled(control);
 
       if (result.status === 'SUCCESS') {

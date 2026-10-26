@@ -236,3 +236,19 @@ test('aborted media upload never falls back to another endpoint',async()=>{
   await assert.rejects(api.uploadFile('original-key',new File(['image'],'ref.png',{type:'image/png'}),controller.signal),/Failed to fetch/);
   assert.equal(calls,1);
 });
+
+test('missing or invalid task status is not silently treated as queued',async()=>{
+ globalThis.fetch=async()=>json({taskId:'removed',status:'',errorCode:'1004',errorMessage:'Task not found'});
+ await assert.rejects(api.queryTaskResultV2('a','removed','global'),api.isTaskNotFoundError);
+ globalThis.fetch=async()=>json({code:807,msg:'APIKEY_TASK_NOT_FOUND',data:null});
+ await assert.rejects(api.queryTaskOutputs('a','removed','global'),api.isTaskNotFoundError);
+ globalThis.fetch=async()=>json({taskId:'removed',status:'',errorCode:'',results:null});
+ await assert.rejects(api.queryTaskResultV2('a','removed','global'),/无法识别/);
+});
+
+test('generic application fields preserve file uploads and normalize numeric aliases',async()=>{
+ globalThis.fetch=async()=>json({code:0,data:{nodeInfoList:['FILE','INTEGER','DOUBLE','TEXT',' future_type '].map((fieldType,i)=>({nodeId:i,fieldName:'p'+i,fieldType,fieldValue:'original',required:i===0}))}});
+ const result=await api.getNodeList('a','123');
+ assert.deepEqual(result.nodes.map(n=>n.fieldType),['FILE','INT','FLOAT','STRING','STRING']);
+ assert.equal(result.nodes[0].required,true);assert.ok(result.nodes.every(n=>n.fieldValue==='original'));
+});

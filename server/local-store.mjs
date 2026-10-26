@@ -75,7 +75,7 @@ export async function openLocalStore(directory,options={}){
     read:id=>serialized(()=>decorate(id,get('snapshots',id))),
     list:prefix=>serialized(()=>db.prepare("SELECT key FROM kv WHERE kind='snapshots' ORDER BY key").all().filter(row=>row.key.startsWith(prefix)).map(row=>decorate(row.key,get('snapshots',row.key)))),
     write:(id,value)=>serialized(async()=>{await validateRefs(value);put('snapshots',id,value);return {ok:true};}),
-    patch:(id,fields)=>serialized(async()=>{await validateRefs(fields);const previous=get('snapshots',id);if(previous===undefined)return {found:false};put('snapshots',id,{...previous,...fields});return {found:true};}),
+    patch:(id,fields)=>serialized(async()=>{await validateRefs(fields);const previous=get('snapshots',id);if(previous===undefined)return {found:false};if(id.startsWith('attempt:')&&previous.status==='cancelled'&&['preparing','submitting','unknown','queued','running','query_failed'].includes(fields?.status))return {found:true};put('snapshots',id,{...previous,...fields});return {found:true};}),
     sequence:id=>serialized(()=>reserveNumber(id).sequence),
     reserveNumber:id=>serialized(()=>reserveNumber(id)),
     numbering:()=>serialized(numberingState),
