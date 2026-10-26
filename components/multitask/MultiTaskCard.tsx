@@ -78,7 +78,7 @@ interface MultiTaskCardProps {
   onSaveTemplate: () => void;
   onVariants: () => void;
   detailView?: boolean;
-  appName?:string;executionStatus?:string;hasResult?:boolean;onPreview?:()=>void;
+  appName?:string;executionStatus?:string;executionState?:string;hasResult?:boolean;onPreview?:()=>void;
   isBusy: boolean;
   onRunOptionsChange: (cardId: string, options: WorkflowRunOptions) => void;
   onWebappIdChange: (cardId: string, value: string) => void;
@@ -213,7 +213,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   onInstanceTypeChange,
   onSnapshotChange,
   detailView,
-  appName,executionStatus,hasResult,onPreview,
+  appName,executionStatus,executionState,hasResult,onPreview,
   onNameChange,
   onFavorite,
   onSaveTemplate,
@@ -287,7 +287,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
               <label className="flex min-w-0 items-center gap-2">{ordinal&&<span className="task-ordinal" aria-label="当前任务顺序">{ordinal}.</span>}<span className="shrink-0 text-xs text-slate-500">任务名称</span><input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
           disabled={isBusy} onChange={event => onNameChange(event.target.value)}
           className="min-w-0 w-full max-w-xl rounded border border-slate-300 bg-transparent px-2 py-1 text-sm dark:border-slate-600" /></label>
-              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${statusMeta.className}`}>
+              <span data-status={executionState} className={`task-state rounded-full px-2 py-0.5 text-[11px] font-medium ${statusMeta.className}`}>
                 {executionStatus||statusMeta.label}
               </span>
             </div>
@@ -378,6 +378,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
       <div className="relative flex-1 min-h-0">
         <StepEditor
           productionLayout={detailView}
+          cancelPending={executionState==='cancelling'}
           applicationId={card.loadedAppId||card.webappId}
           runLabel={['success','failed','cancelled'].includes(card.run.status) ? '再生成一次' : '运行'}
           onSnapshotChange={onSnapshotChange}

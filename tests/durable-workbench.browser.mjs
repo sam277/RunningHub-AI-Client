@@ -12,7 +12,7 @@ const portServer=createServer();await new Promise(resolve=>portServer.listen(0,'
 const video=await fs.readFile('.browser-test-output/preview-fixture.mp4');
 const wav=Buffer.alloc(44+16000);wav.write('RIFF');wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(8000,24);wav.writeUInt32LE(16000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(16000,40);
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFOsAAAAASUVORK5CYII=','base64');
-let server,context,page,serverLog='';const submitted=[],errors=[];const queries=new Map();let holdNewTasks=false,blockUploads=false;const uploadGates=[];
+let server,context,page,serverLog='';const submitted=[],errors=[];const queries=new Map();let holdNewTasks=false,blockUploads=false,mixedQueuedTasks=false;const uploadGates=[],cancelledTasks=new Set(),cancelCalls=[];
 const poll=async(fn,message,ms=20000)=>{const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error(message);};
 async function start(){server=spawn(process.execPath,['scripts/start-local.mjs','--port',String(port),'--data-dir',dataDir,'--config-dir',configDir],{cwd:process.cwd(),windowsHide:true,stdio:['ignore','pipe','pipe']});server.stdout.on('data',d=>serverLog+=d);server.stderr.on('data',d=>serverLog+=d);await poll(async()=>{try{const response=await fetch(base+'/__rh/session');const info=await response.json();return response.ok&&info.rootPath===dataDir;}catch{return false;}},'local server unavailable: '+serverLog);}
 async function stop(){if(!server||server.exitCode!==null)return;server.kill();await new Promise(resolve=>server.once('exit',resolve));}
@@ -30,7 +30,8 @@ async function browser(profile){
     else if(url.pathname.endsWith('/accountStatus'))result.data={remainCoins:'999',currentTaskCounts:'0',remainMoney:null,apiType:'消费级'};
     else if(url.pathname.endsWith('/media/upload/binary')){if(blockUploads)await new Promise(resolve=>uploadGates.push(resolve));result.data={fileName:'upload-'+key+'-'+Date.now()};}
     else if(url.pathname.endsWith('/ai-app/run')){const body=JSON.parse(route.request().postData());submitted.push({key,body});result.data={taskId:'mock-'+submitted.length,taskStatus:'RUNNING'};}
-    else if(url.pathname.endsWith('/v2/query')){const {taskId}=JSON.parse(route.request().postData());const count=queries.get(taskId)||0;queries.set(taskId,count+1);result=(count===0||(holdNewTasks&&Number(taskId.split('-')[1])>4))?{taskId,status:'RUNNING',results:[]}:{taskId,status:'SUCCESS',results:[{url:'https://result.test/'+taskId+'.mp4',type:'video'}]};}
+    else if(url.pathname.endsWith('/cancel')){const {taskId}=JSON.parse(route.request().postData());cancelCalls.push({taskId,key});cancelledTasks.add(taskId);result={code:0,msg:'success',data:null};}
+    else if(url.pathname.endsWith('/v2/query')){const {taskId}=JSON.parse(route.request().postData());const count=queries.get(taskId)||0;queries.set(taskId,count+1);result=cancelledTasks.has(taskId)?{taskId,status:'CANCEL',results:[]}:(count===0||(holdNewTasks&&Number(taskId.split('-')[1])>4))?{taskId,status:mixedQueuedTasks&&Number(taskId.split('-')[1])%2===0?'QUEUED':'RUNNING',results:[]}:{taskId,status:'SUCCESS',results:[{url:'https://result.test/'+taskId+'.mp4',type:'video'}]};}
     else if(url.pathname.endsWith('/outputs')){const {taskId}=JSON.parse(route.request().postData());result.data=[{fileUrl:'https://result.test/'+taskId+'.mp4',fileType:'mp4',consumeCoins:'12.5',thirdPartyConsumeMoney:'0',taskCostTime:'272'}];}
     else if(url.pathname.endsWith('/list'))result.data={records:[],total:0};
     return route.fulfill({json:result});
@@ -220,10 +221,11 @@ try{
   const currentTasks=await workspace(),restoredTask=currentTasks.cards.at(-1);
   const group=page.locator('.comparison-group').filter({has:page.getByRole('button',{name:'对照文字参数 3 提示词',exact:true})});
   await group.getByRole('button',{name:'选择参数列',exact:true}).click();await group.getByRole('checkbox',{name:'种子',exact:true}).uncheck();await group.getByRole('button',{name:'选择参数列',exact:true}).click();
-  await group.getByRole('checkbox',{name:'只看差异',exact:true}).check();await poll(async()=>await group.locator('td[data-field-different=true]').count()>0,'difference columns did not highlight');
+  assert.equal(await group.getByText('基准',{exact:true}).count(),0);
+  assert.equal(await group.locator('.media-field').count(),20,'all ten media fields must be available on both tasks');
+  const horizontal=group.getByRole('slider',{name:'横向滚动参数',exact:true});assert.ok(await horizontal.isVisible());await horizontal.focus();await page.keyboard.press('End');await poll(async()=>await group.locator('.comparison-scroll').evaluate(el=>el.scrollLeft>500),'top scrollbar did not move table');await horizontal.focus();await page.keyboard.press('Home');
   assert.equal(await group.locator('th').filter({hasText:'种子'}).count(),0);
-  await group.getByLabel('比较基准 111',{exact:true}).selectOption(restoredTask.id);
-  await group.getByRole('checkbox',{name:'只看差异',exact:true}).uncheck();
+
   await page.getByRole('checkbox',{name:'选择对照任务 3',exact:true}).check();
   const beforeBulk=(await workspace()).cards[2].nodes.find(n=>n.fieldName==='prompt').fieldValue;
   const sourceRow=page.locator('tr[data-task-id="'+currentTasks.cards[1].id+'"]');
@@ -232,7 +234,8 @@ try{
   await page.getByRole('button',{name:'撤销上次批量操作',exact:true}).click();await poll(async()=>(await workspace()).cards[2].nodes.find(n=>n.fieldName==='prompt').fieldValue===beforeBulk,'comparison undo failed');
   await page.screenshot({path:'.browser-test-output/真正参数对照表.png',fullPage:true});
   await page.getByRole('button',{name:'卡片总览',exact:true}).click();const restoredOverview=page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview');
-  await restoredOverview.getByText('当前基准任务',{exact:true}).waitFor();
+  assert.equal(await restoredOverview.getByText('当前基准任务',{exact:true}).count(),0);
+  const plus=restoredOverview.getByRole('button',{name:'PLUS 任务 3',exact:true});await plus.click();await poll(async()=>await plus.getAttribute('aria-pressed')==='true','PLUS toggle did not activate');assert.equal(await plus.evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(37, 99, 235)');await plus.click();await poll(async()=>await plus.getAttribute('aria-pressed')==='false','PLUS toggle did not deactivate');
   assert.ok(await restoredOverview.locator('.overview-app').isVisible());assert.equal(await restoredOverview.locator('.line-clamp-2').count(),0);
   await restoredOverview.getByRole('button',{name:'提示词',exact:true}).click();const fullPrompt=await page.getByLabel('提示词全文',{exact:true}).inputValue();assert.equal(fullPrompt,beforeBulk);
   await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:base});await page.getByRole('button',{name:'复制全文',exact:true}).click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),fullPrompt);await page.getByRole('button',{name:'关闭文字预览',exact:true}).click();
@@ -246,26 +249,55 @@ try{
   const runSize=await page.getByRole('button',{name:'运行',exact:true}).filter({visible:true}).boundingBox();assert.ok(runSize.height<=38&&runSize.width<180,'run control still consumes too much space');
   await page.setViewportSize({width:1366,height:768});await page.screenshot({path:'.browser-test-output/素材文字并排-1366.png',fullPage:true});assert.ok((await page.locator('.editor-text-input textarea').filter({visible:true}).boundingBox()).height>200);await page.setViewportSize({width:1920,height:1080});
 
-  // Hold accepted mock tasks; stopping must remove queued work while accepted work is archived.
+  // Cancel accepted tasks remotely as well as pending local batch work.
   const state=await workspace(),runSource=state.cards.find(c=>c.id===restoredTask.id);runSource.initialBatchList=Array.from({length:6},(_,i)=>runSource.nodes.map(n=>({...n,fieldValue:n.fieldName==='prompt'?'停止验收 '+i:n.fieldValue,_taskId:'stop-row-'+i})));
   await api('/snapshot/current',{method:'PUT',body:JSON.stringify({value:state})});await page.reload();await page.getByRole('button',{name:'卡片总览',exact:true}).click();
   holdNewTasks=true;const runningOverview=page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview');
   await runningOverview.getByRole('button',{name:'运行',exact:true}).click();await poll(async()=>submitted.length===6,'two accepted mock tasks missing');await poll(async()=>await runningOverview.getByText('运行中',{exact:true}).count()>0,'card running state missing');
   await openSettings();await page.getByRole('button',{name:'保存与备份',exact:true}).click();assert.equal(await page.getByRole('button',{name:'手动重置：开启新编号批次',exact:true}).isDisabled(),true,'settings must see an already running scheduler');await page.getByRole('button',{name:'多任务模式',exact:true}).click();
-  await runningOverview.getByRole('button',{name:'停止后续',exact:true}).click();holdNewTasks=false;
-  await poll(async()=>{const list=await snapshots();return list.length===6&&list.every(a=>a.status==='saved');},'stopped queue prevented accepted results from being archived',30000);
-  assert.equal(submitted.length,6,'stopping must not submit any of the four waiting batch items');
+  await runningOverview.getByRole('button',{name:'取消',exact:true}).click();
+  await poll(async()=>{const list=await snapshots();return list.length===6&&list.filter(a=>a.status==='saved').length===4&&list.filter(a=>a.status==='cancelled').length===2;},'accepted cancellation was not confirmed',30000);
+  assert.equal(submitted.length,6,'cancellation must remove the four waiting batch items');
+  assert.equal(cancelCalls.length,2);for(const call of cancelCalls)assert.equal(call.key,submitted[Number(call.taskId.split('-')[1])-1].key,'cancel must use original account');
+  holdNewTasks=false;
   assert.ok((await snapshots()).filter(a=>a.cardId===restoredTask.id).every(a=>/^[a-f0-9]{64}$/.test(a.sourceDigest)));
-  await page.reload();await page.getByRole('button',{name:'卡片总览',exact:true}).click();await page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview').getByText('已归档',{exact:true}).waitFor();
+  await page.reload();await page.getByRole('button',{name:'卡片总览',exact:true}).click();await page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview').getByText('已取消',{exact:true}).waitFor();
 
   blockUploads=true;await page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview').getByRole('button',{name:'运行',exact:true}).click();
   await poll(async()=>uploadGates.length===2,'upload cancellation gates not reached');
-  await page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview').getByRole('button',{name:'停止后续',exact:true}).click();
+  await page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview').getByRole('button',{name:'取消',exact:true}).click();
   blockUploads=false;for(const release of uploadGates.splice(0))release();
-  await poll(async()=>{const list=await snapshots();return list.length===8&&list.filter(a=>a.status==='interrupted').length===2;},'pre-submit cancellation was not recorded without payment');
+  await poll(async()=>{const list=await snapshots();return list.length===8&&list.filter(a=>a.status==='cancelled').length===4;},'pre-submit cancellation was not recorded without payment');
   assert.equal(submitted.length,6,'stopping during upload must not submit to platform');
   const changedOverview=page.locator('.task-surface[data-task-id="'+restoredTask.id+'"] .task-overview');await changedOverview.getByRole('button',{name:'提示词',exact:true}).click();await page.getByRole('button',{name:'编辑全文',exact:true}).click();await page.getByLabel('编辑全文',{exact:true}).fill('生成完成以后再修改的配置');await page.getByRole('button',{name:'应用修改',exact:true}).click();await page.getByRole('button',{name:'关闭文字预览',exact:true}).click();await changedOverview.getByText('已修改，待生成',{exact:true}).waitFor();assert.equal(submitted.length,6);
+  // The same controls work in list, table and overview; queued and running are distinct.
+  await page.getByRole('button',{name:'列表编辑',exact:true}).click();
+  await page.locator('.task-nav-row[data-task-id="'+restoredTask.id+'"]>button').first().click();
+  const listPlus=page.getByRole('button',{name:'PLUS 当前任务',exact:true}).filter({visible:true});
+  await listPlus.click();await poll(async()=>await listPlus.getAttribute('aria-pressed')==='true','list PLUS not activated');
+  await saved();assert.equal((await workspace()).cards.find(c=>c.id===restoredTask.id).instanceType,'plus');
+  await page.getByRole('button',{name:'卡片总览',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'PLUS 任务 3',exact:true}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('button',{name:'批量对照',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'PLUS 任务 3',exact:true}).getAttribute('aria-pressed'),'true');
+  holdNewTasks=true;mixedQueuedTasks=true;
+  await page.getByRole('button',{name:'全部运行',exact:true}).click();
+  await poll(async()=>submitted.length===8,'run all did not use both account slots');
+  await poll(async()=>{const list=await snapshots();return list.some(a=>a.taskId==='mock-7'&&a.status==='running')&&list.some(a=>a.taskId==='mock-8'&&a.status==='queued');},'running and platform queue not distinguished');
+  const runningRecord=page.locator('.production-record').filter({hasText:'#0005'});
+  await poll(async()=>await page.locator('.comparison-status[data-status=running]').count()>0&&await page.locator('.comparison-status[data-status=queued]').count()>0,'table running and queued status missing');
+  const runningColor=await page.locator('.comparison-status[data-status=running]').first().evaluate(el=>getComputedStyle(el).color),queuedColor=await page.locator('.comparison-status[data-status=queued]').first().evaluate(el=>getComputedStyle(el).color);
+  assert.notEqual(runningColor,queuedColor);
+  await page.screenshot({path:'.browser-test-output/运行排队与全部取消.png',fullPage:true});
+  await page.getByRole('button',{name:'全部取消',exact:true}).click();
+  await poll(async()=>{const list=await snapshots();return list.length===10&&list.filter(a=>a.status==='cancelled').length===6;},'cancel all did not cancel accepted tasks');
+  assert.equal(submitted.length,8,'cancel all must remove all waiting items');assert.equal(cancelCalls.length,4);
+  assert.equal(await page.getByRole('button',{name:'全部运行',exact:true}).isVisible(),true);
+  await page.getByRole('button',{name:'列表编辑',exact:true}).click();
+  const cancelledList=page.locator('.task-surface[data-task-id="'+currentTasks.cards[0].id+'"]');
+  assert.equal(await page.getByRole('button',{name:'停止追踪',exact:true}).count(),0);
+  assert.equal(await page.getByRole('button',{name:'停止后续',exact:true}).count(),0);
   assert.deepEqual(errors,[]);
-  console.log('通过：中文统一设置、原生 Ctrl+V 图片添加替换与文字粘贴、音视频文件接收与播放、链接拒绝、全参数分组对照、基准选择、差异高亮、统一应用与撤销、全文查看复制、常用参数记忆、紧凑按钮、浮窗拖动、两种停止边界；任务在导航/列表/对照/卡片/记录之间双向联动、旧记录精确预览、三类多文件本地播放、预览高度与全屏、两处定位请求、删除后历史预览与恢复；35 个模拟账号的单个新增、批量导入预览、去重、验证失败停用、搜索筛选、文本与 JSON 导出；首页收藏改名与取消撤销；三种视图临时序号、删除撤销、左右拖宽与重开恢复、专注模式；收起侧栏仍完成查询归档；4分32秒用时与黄色账号积分；手动新批次归档及接续编号；待确认任务禁止换密钥与删除账号；真实本地文件库、Windows 密钥保护、旧 File 迁移、取消收藏与撤销、多应用分组、任务重命名与完整复制、批量独立改参、常驻新建/保存/全部运行、两账号模拟调度、编号文件与积分、真实文件归档、本地视频播放、界面备份恢复、清除全部浏览器网站数据、服务重启与全新浏览器资料恢复；零真实平台生成。');
+  console.log('通过：中文统一设置、原生 Ctrl+V 图片添加替换与文字粘贴、音视频文件接收与播放、链接拒绝、全参数分组对照、移除自动基准、全素材列、顶部横向滚动、统一应用与撤销、全文查看复制、常用参数记忆、紧凑按钮、浮窗拖动、PLUS 蓝色开关、平台取消与上传阶段取消；任务在导航/列表/对照/卡片/记录之间双向联动、旧记录精确预览、三类多文件本地播放、预览高度与全屏、两处定位请求、删除后历史预览与恢复；35 个模拟账号的单个新增、批量导入预览、去重、验证失败停用、搜索筛选、文本与 JSON 导出；首页收藏改名与取消撤销；三种视图临时序号、删除撤销、左右拖宽与重开恢复、专注模式；收起侧栏仍完成查询归档；4分32秒用时与黄色账号积分；手动新批次归档及接续编号；待确认任务禁止换密钥与删除账号；真实本地文件库、Windows 密钥保护、旧 File 迁移、取消收藏与撤销、多应用分组、任务重命名与完整复制、批量独立改参、常驻新建/保存/全部运行、两账号模拟调度、编号文件与积分、真实文件归档、本地视频播放、界面备份恢复、清除全部浏览器网站数据、服务重启与全新浏览器资料恢复；零真实平台生成。');
 }catch(error){console.error(serverLog);if(page){await page.screenshot({path:'.browser-test-output/durable-failure.png',fullPage:true}).catch(()=>{});console.error((await page.locator('body').innerText()).slice(-8000));}throw error;}
 finally{blockUploads=false;for(const release of uploadGates.splice(0))release();await context?.close();await stop();await fs.rm(root,{recursive:true,force:true});}

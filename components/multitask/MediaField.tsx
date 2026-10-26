@@ -1,15 +1,15 @@
 import React,{useEffect,useId,useRef,useState} from 'react';
 import { pastedMedia,hasFieldValue } from '../../services/workbenchFields';
 
-interface MediaFieldProps {id?:string;label:string;type:string;file?:File;value?:string;remoteUrl?:string;disabled?:boolean;uploading?:boolean;error?:string;onFile:(file:File)=>void;onClear:()=>void;}
-const MediaField:React.FC<MediaFieldProps>=({id:fieldId,label,type,file,value:providedValue,remoteUrl,disabled=false,uploading=false,error,onFile,onClear})=>{
+interface MediaFieldProps {compact?:boolean;id?:string;label:string;type:string;file?:File;value?:string;remoteUrl?:string;disabled?:boolean;uploading?:boolean;error?:string;onFile:(file:File)=>void;onClear:()=>void;}
+const MediaField:React.FC<MediaFieldProps>=({compact=false,id:fieldId,label,type,file,value:providedValue,remoteUrl,disabled=false,uploading=false,error,onFile,onClear})=>{
   const [url,setUrl]=useState(''),[message,setMessage]=useState(''),[problem,setProblem]=useState(''),[broken,setBroken]=useState(false);
   const field=useRef<HTMLDivElement>(null),input=useRef<HTMLInputElement>(null),id=useId();
   useEffect(()=>{if(!file){setUrl('');return;}const next=URL.createObjectURL(file);setUrl(next);return()=>URL.revokeObjectURL(next);},[file]);
   const accept=(next:File,pasted=false)=>{const result=pastedMedia({files:[next] as unknown as FileList,items:[] as unknown as DataTransferItemList},type);if(result.error){setProblem(result.error);return;}setProblem('');setMessage(pasted?'已粘贴，素材已替换':'素材已更新');onFile(next);};
   const value=hasFieldValue(providedValue||'')?providedValue:'',src=url||remoteUrl,kind=type.toLowerCase();
   useEffect(()=>{setBroken(false);},[src]);
-  return <div id={fieldId} ref={field} tabIndex={disabled?-1:0} role="group" aria-label={label+'素材框'} aria-disabled={disabled} className="media-field" onPointerDown={e=>{if(!(e.target as HTMLElement).closest('button,input,a,video,audio'))field.current?.focus();}}
+  return <div id={fieldId} ref={field} tabIndex={disabled?-1:0} role="group" aria-label={label+'素材框'} aria-disabled={disabled} className={compact?"media-field media-compact":"media-field"} onPointerDown={e=>{if(!(e.target as HTMLElement).closest('button,input,a,video,audio'))field.current?.focus();}}
     onPaste={e=>{if((e.target as HTMLElement).closest('input,textarea,[contenteditable=true]'))return;if(disabled)return;e.preventDefault();e.stopPropagation();const result=pastedMedia(e.clipboardData,type);if(result.file)accept(result.file,true);else{setMessage('');setProblem(result.error||'无法读取剪贴板文件');}}}
     onDragOver={e=>{e.preventDefault();}} onDrop={e=>{e.preventDefault();if(!disabled){field.current?.focus();const result=pastedMedia(e.dataTransfer,type);if(result.file)accept(result.file);else setProblem(result.error||'无法读取文件');}}}>
     <header><strong>{label}</strong><span>{uploading?'上传中…':file?'本地原件':value?'已有素材':'未添加'}</span></header>

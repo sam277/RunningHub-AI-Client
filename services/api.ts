@@ -59,6 +59,10 @@ const normalizeTaskStatus = (status: any): TaskRuntimeStatus => {
       return 'SUCCESS';
     case 'FAILED':
       return 'FAILED';
+    case 'CANCEL':
+    case 'CANCELED':
+    case 'CANCELLED':
+      return 'CANCELLED';
     case 'RUNNING':
       return 'RUNNING';
     case 'QUEUED':
@@ -495,6 +499,16 @@ export interface QueryTaskResponse extends ApiResponse<TaskOutput[] | any> {
   clientId?: string | null;
   promptTips?: PromptTips | string | null;
 }
+
+// Cancellation always uses the original account and region of the accepted task.
+export const cancelTask = async (apiKey: string, taskId: string, region: RunningHubRegion) => {
+  const response = await fetch(`${getRunningHubHost(region)}/task/openapi/cancel`, {
+    method: 'POST', headers: buildAuthHeaders(apiKey, {'Content-Type':'application/json'}),
+    body: JSON.stringify({apiKey,taskId}), signal: AbortSignal.timeout(15000),
+  });
+  const json = await handleResponse<ApiResponse<null>>(response);
+  if (!isWrappedApiResponse(json) || json.code !== 0) throw new Error(json?.msg || '平台未接受取消请求');
+};
 
 export const queryTaskResultV2 = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResultV2> => {
   const region = resolvedRegion || await resolveRunningHubRegion(apiKey);

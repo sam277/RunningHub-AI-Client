@@ -1,4 +1,4 @@
-import TaskOverview,{taskStatus} from './multitask/TaskOverview';
+import TaskOverview,{taskStatus,taskState} from './multitask/TaskOverview';
 import ComparisonTable from './multitask/ComparisonTable';
 import { fieldKey,schemaKey,pendingKey,taskConfigurationDigest,preferenceGroup } from '../services/workbenchFields';
 import ResultPreview from './multitask/ResultPreview';
@@ -16,7 +16,7 @@ import { StepEditorRef, StepEditorSnapshot } from './StepEditor';
 import { ApiKeyEntry, AutoSaveConfig, Favorite, InstanceType, NodeInfo, PendingFilesMap, RecentApp, WebAppInfo, WorkflowRunOptions } from '../types';
 import { parseRunningHubAppInput } from '../services/runningHubRegion';
 import { readWorkspaceData, writeWorkspaceData } from '../services/workspaceStorage';
-import { runProductionTask, hasUnresolvedAttempt, isAccountUnavailableError, ProductionAttempt, listAttemptSummaries, loadAttemptInputs } from '../services/production';
+import { runProductionTask, hasUnresolvedAttempt, isAccountUnavailableError, ProductionAttempt, listAttemptSummaries, loadAttemptInputs, isCancellableAttempt, requestAttemptCancellation } from '../services/production';
 import ProductionHistory from './multitask/ProductionHistory';
 import ParameterReuseDialog, { ParameterChange } from './multitask/ParameterReuseDialog';
 import AppLibraryEditor from './AppLibraryEditor';
@@ -333,6 +333,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
     if (snapshot) {
       return {
         ...snapshot,
+        instanceType:card.instanceType,
         nodes: cloneNodes(snapshot.nodes),
         batchList: cloneNodeRows(snapshot.batchList),
         pendingFiles: { ...snapshot.pendingFiles },
@@ -766,15 +767,36 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
     };
   };
 
-  const stopTrackingCard=(cardId:string)=>{
-    const session=sessionRef.current;if(!session)return;
-    session.stoppingCards.add(cardId);
-    let removed=0;for(let i=session.pendingUnits.length-1;i>=0;i--)if(session.pendingUnits[i].cardId===cardId){session.pendingUnits.splice(i,1);removed++;finishUnit(session,cardId);}
-    session.wake?.();
-    updateCard(cardId,card=>({...card,run:{...card.run,totalUnits:Math.max(card.run.completedUnits+card.run.failedUnits+card.run.activeUnits,card.run.totalUnits-removed),status:card.run.activeUnits?'running':'cancelled',progressText:card.run.activeUnits?'已停止后续，已开始的任务继续处理和归档':'已取消排队'}}));
-    appendCardLog(cardId,'停止后续：已移除 '+removed+' 个未开始项，已提交任务继续查询和归档。');
+  const taskAttempt=(cardId:string)=>attempts.find(a=>a.cardId===cardId&&isCancellableAttempt(a))||attempts.find(a=>a.cardId===cardId);
+  const cardIsBusy=(cardId:string)=>!!sessionRef.current?.runningCardIds.has(cardId)||attempts.some(a=>a.cardId===cardId&&isCancellableAttempt(a));
+  const cancelCard=async(cardId:string)=>{
+    const session=sessionRef.current;
+    if(session){
+      session.stoppingCards.add(cardId);
+      let removed=0;
+      for(let i=session.pendingUnits.length-1;i>=0;i--)if(session.pendingUnits[i].cardId===cardId){session.pendingUnits.splice(i,1);removed++;finishUnit(session,cardId);}
+      session.wake?.();
+      updateCard(cardId,card=>({...card,run:{...card.run,totalUnits:Math.max(card.run.completedUnits+card.run.failedUnits+card.run.activeUnits,card.run.totalUnits-removed),status:card.run.activeUnits?card.run.status:'cancelled',progressText:card.run.activeUnits?'正在请求取消':'已取消排队'}}));
+      if(removed)appendCardLog(cardId,'已取消 '+removed+' 个尚未提交的项目。');
+    }
+    try {
+    const records=(await listAttemptSummaries()).filter(a=>a.cardId===cardId&&isCancellableAttempt(a));
+    const results=await Promise.allSettled(records.map(a=>requestAttemptCancellation(a.id,latestApiKeysRef.current)));
+    for(let i=0;i<results.length;i++){
+      const result=results[i];
+      appendCardLog(cardId,result.status==='rejected'?'取消请求失败：'+String(result.reason?.message||result.reason):records[i].taskId?'已请求平台取消，等待确认。':'已记录取消请求，不再提交新任务。');
+    }
+    const failed=results.filter(r=>r.status==='rejected');
+    if(failed.length)setSessionNotice('部分取消请求失败，请在生成记录查看原因并重试；尚未确认的任务仍会继续查询。');
+    await refreshAttempts();
+    }catch(error:any){setSessionNotice(error?.message||'无法读取取消记录，请重试');}
   };
-  const stopAllTracking=()=>{for(const id of [...(sessionRef.current?.runningCardIds||[])])stopTrackingCard(id);};
+  const cancelAll=async()=>{
+    try {
+    const ids=new Set([...(sessionRef.current?.runningCardIds||[]),...(await listAttemptSummaries()).filter(isCancellableAttempt).map(a=>a.cardId)]);
+    await Promise.allSettled([...ids].map(cancelCard));
+    }catch(error:any){setSessionNotice(error?.message||'无法读取取消记录，请重试');}
+  };
 
   const buildUnitsFromSnapshot = (card: MultiTaskCardData, snapshot: StepEditorSnapshot): RunUnit[] => {
     const batchList = snapshot.batchList.length > 0 ? snapshot.batchList.map(cloneNodes) : [];
@@ -800,7 +822,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
     const runnable: { card: MultiTaskCardData; snapshot: StepEditorSnapshot }[] = [];
 
     cards.forEach(card => {
-      if (!targetIds.has(card.id) || sessionRef.current?.runningCardIds.has(card.id) || card.loading) return;
+      if (!targetIds.has(card.id) || cardIsBusy(card.id) || card.loading) return;
 
       const snapshot = manualSnapshotsRef.current[card.id] || editorRefs.current[card.id]?.getSnapshot();
       if (!snapshot) return;
@@ -1074,9 +1096,9 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
                     ...card,
                     run: {
                       ...card.run,
-                      status: 'cancelled',
+                      status: card.run.activeUnits>1 ? card.run.status : 'cancelled',
                       activeUnits: Math.max(0, card.run.activeUnits - 1),
-                      progressText: '已停止尚未提交的任务',
+                      progressText: error.message || '已取消',
                     },
                   }));
                   return;
@@ -1244,7 +1266,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
         setSelectedCardId(nextId);setSelectedAttemptId(null);setPreviewOpen(false); setSessionNotice('已按此条记录恢复输入，请核对后手动运行，将新增一次生成。');
       };
   const loadAttemptInputsForPreview=async(attempt:ProductionAttempt)=>{try{const full=await loadAttemptInputs(attempt.id);if(full)prepareAttempt(full);}catch{setSessionNotice('原始素材暂时无法读取，请检查文件库。');}};
-  const historyPanel=<ProductionHistory onPrepare={prepareAttempt} accounts={apiKeys} autoSave={autoSaveConfig.enabled} attempts={attempts} activeTaskId={activeCardId} selectedAttemptId={selectedAttempt?.id} onSelect={selectAttempt} onPreview={previewAttempt} onRefresh={refreshAttempts} readError={historyReadError}/>;
+  const historyPanel=<ProductionHistory onCancel={id=>cancelCard(id)} onPrepare={prepareAttempt} accounts={apiKeys} autoSave={autoSaveConfig.enabled} attempts={attempts} activeTaskId={activeCardId} selectedAttemptId={selectedAttempt?.id} onSelect={selectAttempt} onPreview={previewAttempt} onRefresh={refreshAttempts} readError={historyReadError}/>;
   const changeTableField=(card:MultiTaskCardData,node:NodeInfo,value:string,file?:File|null)=>{
     if(sessionRef.current?.runningCardIds.has(card.id))return;const snapshot=buildSnapshotForCard(card);if(snapshot.hasUploadingFiles)return;
     const files={...snapshot.pendingFiles};if(file!==undefined){for(const key of Object.keys(files)){const [,id,field]=key.split('|');if(id===node.nodeId&&field===node.fieldName)delete files[key];}if(file)files[pendingKey(node)]=file;}
@@ -1261,7 +1283,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
   };
   const appName=(card:MultiTaskCardData)=>favorites.find(item=>item.webappId===(card.loadedAppId||card.webappId))?.name||card.webAppInfo?.webappName||card.webappId||'尚未加载应用';
   const runOne=(id:string)=>{setSelectedAttemptId(null);void startScheduler([id]);};
-  const comparisonItems=cards.map((card,index)=>({card,snapshot:buildSnapshotForCard(card),ordinal:index+1,busy:!!sessionRef.current?.runningCardIds.has(card.id),status:taskStatus(card,attempts.find(a=>a.cardId===card.id))}));
+  const comparisonItems=cards.map((card,index)=>({card,snapshot:buildSnapshotForCard(card),ordinal:index+1,busy:cardIsBusy(card.id),status:taskStatus(card,taskAttempt(card.id)),state:taskState(card,taskAttempt(card.id))}));
 
 
   return (
@@ -1311,24 +1333,10 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
               {'\u4fdd\u5b58\u8349\u7a3f'}
             </button>
 
-            {sessionActive ? (
-              <button
-                onClick={stopAllTracking}
-                className="inline-flex items-center gap-2 rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-600"
-              >
-                <Square className="h-4 w-4" />
-                停止追踪
-              </button>
-            ) : (
-              <button
-                onClick={handleRunAll}
-                disabled={cards.length === 0}
-                className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Play className="h-4 w-4" />
-                {selection.size ? `运行所选 (${selection.size})` : '全部运行'}
-              </button>
-            )}
+            <button onClick={()=>void startScheduler(cards.map(c=>c.id))} disabled={!cards.length} className="run-task inline-flex items-center gap-1"><Play size={14}/>全部运行</button>
+            <button onClick={()=>void cancelAll()} disabled={!sessionActive&&!attempts.some(isCancellableAttempt)} className="stop-task inline-flex items-center gap-1"><Square size={14}/>全部取消</button>
+            {selection.size>0&&<button onClick={handleRunAll} className="text-xs text-brand-600">运行所选 ({selection.size})</button>}
+
           </div>
         </div>
 
@@ -1466,13 +1474,13 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
             <button onClick={() => focusTask(card.id)} aria-pressed={activeCardId === card.id}
               className={`min-w-0 flex-1 rounded-xl border p-3 text-left ${activeCardId === card.id ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-[#161920]'}`}>
               <div className="truncate text-sm font-medium">{index+1}. {card.name || card.webAppInfo?.webappName || card.webappId || '新任务'}</div>
-              <div className="mt-1 truncate text-xs text-slate-500">{card.run.progressText} · {card.run.completedUnits}/{card.run.totalUnits}</div>
-            </button><button className="mt-3 shrink-0 text-slate-500" disabled={!!sessionRef.current?.runningCardIds.has(card.id)} aria-label={`删除导航任务 ${index+1}`} title="删除任务配置，保留记录和结果" onClick={()=>handleRemoveCard(card.id)}><Trash2 size={14}/></button>
+              <div data-status={taskState(card,taskAttempt(card.id))} className="task-state mt-1 truncate text-xs text-slate-500" title={card.run.progressText}>{taskStatus(card,taskAttempt(card.id))}{card.run.totalUnits>0?' · '+card.run.completedUnits+'/'+card.run.totalUnits:''}</div>
+            </button><button className="mt-3 shrink-0 text-slate-500" disabled={cardIsBusy(card.id)} aria-label={`删除导航任务 ${index+1}`} title="删除任务配置，保留记录和结果" onClick={()=>handleRemoveCard(card.id)}><Trash2 size={14}/></button>
           </div>)}
           <p className="mt-3 text-xs leading-5 text-slate-500">同应用多素材：打开任务内的批量设置，一次导入多张图片。不同应用：新建任务后分别配置。</p>
         </aside>}
       <div className="production-center"><div hidden={!activeCard&&!!activeCardId} className={viewMode==='cards'?"task-editing-area min-h-0 min-w-0 overflow-auto p-3":"task-editing-area production-editor-area"}>
-        {viewMode==='batch'&&<ComparisonTable items={comparisonItems} activeTaskId={activeCardId} selection={selection} onFocus={focusTask} onSelect={(id,value)=>setSelection(previous=>{const next=new Set(previous);value?next.add(id):next.delete(id);return next;})} onName={(id,name)=>updateCard(id,current=>({...current,name}))} onChange={(id,node,value,file)=>{const card=cards.find(c=>c.id===id);if(card)changeTableField(card,node,value,file);}} onBulk={applyComparisonField} onEdit={id=>{focusTask(id);setViewMode('list');}} onDuplicate={handleDuplicateCard} onDelete={handleRemoveCard} onRun={runOne} onStop={stopTrackingCard}/>}
+        {viewMode==='batch'&&<ComparisonTable items={comparisonItems} activeTaskId={activeCardId} selection={selection} onFocus={focusTask} onSelect={(id,value)=>setSelection(previous=>{const next=new Set(previous);value?next.add(id):next.delete(id);return next;})} onName={(id,name)=>updateCard(id,current=>({...current,name}))} onChange={(id,node,value,file)=>{const card=cards.find(c=>c.id===id);if(card)changeTableField(card,node,value,file);}} onBulk={applyComparisonField} onEdit={id=>{focusTask(id);setViewMode('list');}} onDuplicate={handleDuplicateCard} onDelete={handleRemoveCard} onRun={runOne} onStop={cancelCard} onPlus={id=>updateCard(id,current=>({...current,instanceType:current.instanceType==='plus'?'default':'plus'}))}/>}
         {cards.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-8 py-12 text-center dark:border-slate-700 dark:bg-[#161920]">
@@ -1485,10 +1493,10 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
           <div className={viewMode === 'cards' ? 'overview-grid' : viewMode==='batch'?'hidden':'h-full'}>
             {cards.map((card,index) => (
               <div key={card.id} data-task-id={card.id} data-task-focused={activeCardId===card.id} onPointerDownCapture={()=>focusTask(card.id)} onFocusCapture={()=>focusTask(card.id)} className={'task-surface '+(viewMode !== 'cards' ? (card.id === activeCardId ? 'h-full' : 'hidden') : '')}>
-              {viewMode==='cards'&&<TaskOverview ordinal={index+1} busy={!!sessionRef.current?.runningCardIds.has(card.id)} card={card} snapshot={buildSnapshotForCard(card)} baseline={comparisonItems.find(item=>item.card.id===settingsStorage.getItem('rh_compare_base_'+preferenceGroup(card.loadedAppId||card.webappId,buildSnapshotForCard(card).nodes)))||comparisonItems.find(item=>schemaKey(item.card.loadedAppId||item.card.webappId,item.snapshot.nodes)===schemaKey(card.loadedAppId||card.webappId,buildSnapshotForCard(card).nodes))} attempt={attempts.find(attempt=>attempt.cardId===card.id)} appName={appName(card)} selected={selection.has(card.id)} onSelect={value=>setSelection(previous=>{const next=new Set(previous);value?next.add(card.id):next.delete(card.id);return next;})} onName={name=>updateCard(card.id,current=>({...current,name}))} onRun={()=>runOne(card.id)} onStop={()=>stopTrackingCard(card.id)} onPreview={()=>{const attempt=attempts.find(a=>a.cardId===card.id&&a.outputs.length>0);if(attempt)previewAttempt(attempt);}} onChange={(node,value)=>changeTableField(card,node,value)} onDuplicate={()=>handleDuplicateCard(card.id)} onRemove={()=>handleRemoveCard(card.id)} onEdit={()=>{focusTask(card.id);setViewMode('list');}}/>}
+              {viewMode==='cards'&&<TaskOverview ordinal={index+1} busy={cardIsBusy(card.id)} card={card} snapshot={buildSnapshotForCard(card)} attempt={taskAttempt(card.id)} onPlus={()=>updateCard(card.id,current=>({...current,instanceType:current.instanceType==='plus'?'default':'plus'}))} appName={appName(card)} selected={selection.has(card.id)} onSelect={value=>setSelection(previous=>{const next=new Set(previous);value?next.add(card.id):next.delete(card.id);return next;})} onName={name=>updateCard(card.id,current=>({...current,name}))} onRun={()=>runOne(card.id)} onStop={()=>cancelCard(card.id)} onPreview={()=>{const attempt=attempts.find(a=>a.cardId===card.id&&a.outputs.length>0);if(attempt)previewAttempt(attempt);}} onChange={(node,value)=>changeTableField(card,node,value)} onDuplicate={()=>handleDuplicateCard(card.id)} onRemove={()=>handleRemoveCard(card.id)} onEdit={()=>{focusTask(card.id);setViewMode('list');}}/>}
               <div className={viewMode==='cards'?'hidden':'h-full'}><MultiTaskCard
                 appName={appName(card)}
-                executionStatus={taskStatus(card,attempts.find(a=>a.cardId===card.id))}
+                executionStatus={taskStatus(card,taskAttempt(card.id))} executionState={taskState(card,taskAttempt(card.id))}
                 onPreview={()=>{const attempt=attempts.find(a=>a.cardId===card.id&&a.outputs.length>0);if(attempt)previewAttempt(attempt);}}
                 hasResult={attempts.some(a=>a.cardId===card.id&&a.outputs.length>0)}
                 onFavorite={() => favorites.some(item=>item.webappId===card.webappId)?setSessionNotice('此应用已经收藏，请在首页“我的收藏”修改名称。'):setEditingFavorite({ webappId: card.webappId, name: favorites.find(item => item.webappId === card.webappId)?.name || card.webAppInfo?.webappName || card.name || '', appInfo: card.webAppInfo || undefined })}
@@ -1504,7 +1512,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
                 editorRef={ref => {
                   editorRefs.current[card.id] = ref;
                 }}
-                isBusy={!!sessionRef.current?.runningCardIds.has(card.id)}
+                isBusy={cardIsBusy(card.id)}
                 onRunOptionsChange={(cardId, runOptions) => {
                   if (sessionRef.current?.runningCardIds.has(cardId)) return;
                   updateCard(cardId, current => ({ ...current, runOptions }));
@@ -1514,7 +1522,7 @@ const MultiTaskView: React.FC<MultiTaskViewProps> = ({
                 onRemove={handleRemoveCard}
                 onDuplicate={handleDuplicateCard}
                 onRun={handleRunCard}
-                onCancel={stopTrackingCard}
+                onCancel={cancelCard}
                 onInstanceTypeChange={(cardId, nextType) => {
                   updateCard(cardId, current => ({
                     ...current,

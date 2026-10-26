@@ -4,7 +4,7 @@ import { buildSync } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
-import { revealInExplorer } from '../server/reveal-file.mjs';
+import { revealInExplorer,createFileRevealer,REVEAL_SCRIPT } from '../server/reveal-file.mjs';
 const code=buildSync({entryPoints:[fileURLToPath(new URL('../services/resultPreview.ts',import.meta.url))],bundle:true,write:false,format:'cjs',platform:'node'}).outputFiles[0].text,module={exports:{}};
 const preview=new Function('module','exports',code+';return module.exports;')(module,module.exports);
 test('preview types handle MIME, extensions, download fallback and saved or missing local receipts',()=>{
@@ -26,4 +26,17 @@ test('Explorer selection sends special-character paths through stdin, not shell 
 });
 test('Explorer failures reject instead of reporting an unconfirmed success',{skip:process.platform!=='win32'},async()=>{
  await assert.rejects(revealInExplorer('J:\\file.mp4',false,{spawnProcess:fakeShell({fail:true})}),/资源管理器未能定位文件/);
+});
+
+test('Directory Opus fast path avoids recompilation and preserves Unicode paths',{skip:process.platform!=='win32'},async()=>{
+  assert.ok(REVEAL_SCRIPT.indexOf('Add-Type')>REVEAL_SCRIPT.indexOf('}else{'));
+  const runtime='D:\\Program Files\\Opus\\dopusrt.exe',target="J:\\测试 目录\\含逗号,单引号'与&符号.mp4",calls=[];
+  const spawnProcess=(command,args,options)=>{
+    const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{};
+    child.stdin=new Writable({write(_chunk,_encoding,done){done();},final(done){queueMicrotask(()=>{calls.push({command,args,options});if(command==='powershell.exe')child.stdout.write('OK\nOPUS:'+Buffer.from(runtime).toString('base64'));child.emit('close',0);});done();}});
+    return child;
+  };
+  const reveal=createFileRevealer({spawnProcess});await reveal(target);await reveal(target);
+  assert.equal(calls[0].command,'powershell.exe');assert.equal(calls[1].command,runtime);
+  assert.deepEqual(calls[1].args,['/acmd','Go',target,'OPENCONTAINER','NEWTAB=tofront']);assert.equal(calls[1].options.windowsHide,true);
 });

@@ -1,13 +1,16 @@
 import { ApiKeyEntry, NodeInfo, PendingFilesMap, TaskOutput, WorkflowRunOptions } from '../types';
-import { executeWorkflowTask, ExecuteTaskRequest, TaskExecutionError, TaskCancelledError, TaskUsageStats, selectPendingFilesForTask, parseTaskUsage } from './taskExecutor';
-import { isCapacityLimitedError, queryTaskResult } from './api';
+import { executeWorkflowTask, ExecuteTaskRequest, TaskExecutionError, TaskCancelledError, RemoteTaskCancelledError, TaskUsageStats, selectPendingFilesForTask, parseTaskUsage } from './taskExecutor';
+import { cancelTask, isCapacityLimitedError, queryTaskResult } from './api';
 import { getResolvedRunningHubRegion } from './runningHubRegion';
 import { saveFileFromUrl } from './autoSaveService';
 import { listWorkspaceData, readWorkspaceData, writeWorkspaceData, patchWorkspaceFields, allocateGenerationNumber, listWorkspaceMetadata, readWorkspaceMetadata } from './workspaceStorage';
 import { flushLocalSettings } from './localPersistence';
 
-export type AttemptStatus = 'preparing' | 'submitting' | 'unknown' | 'queued' | 'running' | 'query_failed' | 'generation_failed' | 'rejected' | 'interrupted' | 'completed' | 'downloading' | 'download_failed' | 'saved';
+export type AttemptStatus = 'preparing' | 'submitting' | 'unknown' | 'queued' | 'running' | 'query_failed' | 'generation_failed' | 'rejected' | 'interrupted' | 'completed' | 'downloading' | 'download_failed' | 'saved' | 'cancelled';
 export interface ProductionAttempt {
+  cancelRequestedAt?:number;
+  cancelSentAt?:number|null;
+  cancelError?:string|null;
   parentAttemptId?: string;
   sourceDigest?:string;
   sequence?: number;
@@ -25,11 +28,42 @@ export interface ProductionAttempt {
   error?: string; decision?: 'adopted' | 'redo'; unitIndex: number;
 }
 export const ATTEMPT_LABELS: Record<AttemptStatus, string> = {
-  preparing: '准备素材', submitting: '提交中', unknown: '提交待确认，禁止自动重发', queued: '平台排队',
-  running: '生成中', query_failed: '查询中断，可继续查询', generation_failed: '生成失败', rejected: '提交未接受',
-  interrupted: '未提交，准备已中断', completed: '生成完成，待保存', downloading: '正在归档', download_failed: '下载失败，可单独重试', saved: '已归档',
+  preparing: '准备素材', submitting: '提交中', unknown: '提交待确认，禁止自动重发', queued: '排队中',
+  running: '运行中', query_failed: '查询中断，可继续查询', generation_failed: '生成失败', rejected: '提交未接受',
+  interrupted: '未提交，准备已中断', completed: '已生成 · 待保存', downloading: '保存中', download_failed: '已生成 · 保存失败', saved: '已完成', cancelled:'已取消',
 };
 const signature = async (key: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key.trim()))), n => n.toString(16).padStart(2,'0')).join('');
+export const isCancellableAttempt = (attempt:ProductionAttempt) => ['preparing','submitting','unknown','queued','running','query_failed'].includes(attempt.status);
+export const cancellationPending = (attempt?:ProductionAttempt) => !!attempt?.cancelRequestedAt && !!attempt && isCancellableAttempt(attempt) && !attempt.cancelError;
+const cancelling = new Map<string,Promise<void>>();
+const patchCancellation = async (id:string,fields:Record<string,unknown>) => { await patchWorkspaceFields('attempt:'+id,{...fields,updatedAt:Date.now()});notify(); };
+const sendCancellation = (id:string,accounts:ApiKeyEntry[]):Promise<void> => {
+  const pending=cancelling.get(id);if(pending)return pending;
+  const operation=(async()=>{
+    const attempt=await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);
+    if(!attempt||!isCancellableAttempt(attempt)||!attempt.cancelRequestedAt||!attempt.taskId||attempt.cancelSentAt||attempt.cancelError)return;
+    try{
+      const account=accounts.find(a=>a.id===attempt.accountId);
+      if(!account?.apiKey.trim() || (attempt.accountSignature && await signature(account.apiKey)!==attempt.accountSignature))throw new Error('请恢复本次任务原账号的 API，才能取消平台任务');
+      await cancelTask(account.apiKey,attempt.taskId,attempt.region==='cn'?'cn':'global');
+      await patchCancellation(id,{cancelSentAt:Date.now(),cancelError:null});
+    }catch(error:any){await patchCancellation(id,{cancelError:error?.message||'取消请求失败，任务仍会继续查询'});throw error;}
+  })();
+  cancelling.set(id,operation);void operation.finally(()=>cancelling.delete(id)).catch(()=>{});return operation;
+};
+export async function requestAttemptCancellation(id:string,accounts:ApiKeyEntry[]){
+  const attempt=await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id);
+  if(!attempt||!isCancellableAttempt(attempt))return;
+  // Keep intent outside saveAttempt's mutable fields: an older query must never erase it.
+  await patchCancellation(id,{cancelRequestedAt:Date.now(),cancelError:null,...(attempt.cancelError?{cancelSentAt:null}:{})});
+  if(!attempt.taskId && !active.has(id) && attempt.status==='preparing'){
+    await saveAttempt({...attempt,status:'cancelled',timings:{...attempt.timings,failedAt:Date.now()},error:undefined});return;
+  }
+  if(!attempt.taskId && !active.has(id) && ['unknown','submitting'].includes(attempt.status)){
+    const message='平台编号尚未确认，请先核对并绑定编号，再取消平台任务';await patchCancellation(id,{cancelError:message});throw new Error(message);
+  }
+  await sendCancellation(id,accounts);
+}
 const active = new Set<string>();
 const recovering = new Set<string>();
 const downloading = new Set<string>();
@@ -40,7 +74,7 @@ export const loadAttemptInputs = (id:string) => readWorkspaceData<ProductionAtte
 export const attemptNumber = (attempt:ProductionAttempt) => attempt.sequence ? String(attempt.displaySequence??attempt.sequence).padStart(4,'0') : '旧记录';
 export const saveAttempt = async (attempt: ProductionAttempt) => {
   const next = { ...attempt, updatedAt: Date.now() };
-  const mutable = { timings:next.timings,status: next.status, updatedAt: next.updatedAt, taskId: next.taskId, submittedNodes: next.submittedNodes, outputs: next.outputs, files: next.files, error: next.error, usage: next.usage };
+  const mutable = { timings:next.timings,status: next.status, updatedAt: next.updatedAt, taskId: next.taskId, submittedNodes: next.submittedNodes, outputs: next.outputs, files: next.files, error: next.error??null, usage: next.usage };
   if (!await patchWorkspaceFields('attempt:'+attempt.id, mutable)) await writeWorkspaceData('attempt:'+attempt.id, next);
   notify(); return next;
 };
@@ -115,12 +149,15 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
         },
         beforeSubmit: async nodes => {
           await request.callbacks?.beforeSubmit?.(nodes);
+          if((await readWorkspaceMetadata<ProductionAttempt>('attempt:'+id))?.cancelRequestedAt)throw new TaskCancelledError();
           attempt = { ...attempt, submittedNodes: structuredClone(nodes),timings:{...attempt.timings,submissionStartedAt:Date.now()}, status: 'submitting' };
           attempt = await saveAttempt(attempt);
         },
         onAccepted: async taskId => {
           attempt = { ...attempt, taskId,timings:{...attempt.timings,acceptedAt:Date.now()}, status: 'queued' };
           attempt = await saveAttempt(attempt);
+          await request.callbacks?.onAccepted?.(taskId,attempt.submittedNodes||[]);
+          await sendCancellation(id,[context.account]).catch(()=>{});
         },
         onGenerationResult: async outputs => {
           attempt = { ...attempt, status: 'completed',timings:{...attempt.timings,generationObservedAt:Date.now()}, outputs };
@@ -132,11 +169,11 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
     if (request.autoSaveEnabled) await archiveAttempt(attempt.id);
     return result;
   } catch (error: any) {
-    const status: AttemptStatus = error instanceof TaskCancelledError ? (attempt.taskId ? 'query_failed' : attempt.status === 'submitting' ? 'unknown' : 'interrupted') :
+    const status: AttemptStatus = error instanceof RemoteTaskCancelledError ? 'cancelled' : error instanceof TaskCancelledError ? (attempt.taskId ? 'query_failed' : attempt.status === 'submitting' ? 'unknown' : 'cancelled') :
       attempt.taskId ? (error instanceof TaskExecutionError && error.phase === 'generation' ? 'generation_failed' : 'query_failed') :
       attempt.status === 'submitting' ? (isCapacityLimitedError(error) || isAccountUnavailableError(error) || (/^4\d\d$/.test(String(error?.code))) ? 'rejected' : 'unknown') : 'interrupted';
-    await saveAttempt({ ...attempt, status,timings:{...attempt.timings,failedAt:['generation_failed','rejected','interrupted'].includes(status)?Date.now():undefined}, error: error?.message || '执行中断' }).catch(() => {});
-    if (attempt.taskId && !(error instanceof TaskExecutionError)) throw new TaskExecutionError(attempt.taskId, error);
+    await saveAttempt({ ...attempt, status,timings:{...attempt.timings,failedAt:['generation_failed','rejected','interrupted','cancelled'].includes(status)?Date.now():undefined}, error: status==='cancelled'?undefined:error?.message || '执行中断' }).catch(() => {});
+    if (attempt.taskId && !(error instanceof TaskExecutionError) && !(error instanceof TaskCancelledError)) throw new TaskExecutionError(attempt.taskId, error);
     throw error;
   } finally { active.delete(attempt.id); }
 }
@@ -163,10 +200,11 @@ export async function recoverAttempt(id: string, accounts: ApiKeyEntry[], autoSa
     if (!account?.apiKey.trim()) return saveAttempt({ ...attempt, status: 'query_failed', error: '原账号不可用，请恢复原账号密钥后继续查询。' });
     if (attempt.accountSignature && await signature(account.apiKey) !== attempt.accountSignature) return saveAttempt({ ...attempt, status: 'query_failed', error: '原账号密钥已被替换；请恢复原密钥，不能将远端任务转交其他账号。' });
     try {
+      await sendCancellation(id,accounts).catch(()=>{});
       const result = await queryTaskResult(account.apiKey, attempt.taskId, attempt.region === 'cn' ? 'cn' : 'global');
-      attempt = await saveAttempt({ ...attempt, status: result.status === 'SUCCESS' ? 'completed' : result.status === 'FAILED' ? 'generation_failed' : result.status === 'RUNNING' ? 'running' : 'queued',
+      attempt = await saveAttempt({ ...attempt, status: result.status === 'SUCCESS' ? 'completed' : result.status === 'FAILED' ? 'generation_failed' : result.status === 'CANCELLED' ? 'cancelled' : result.status === 'RUNNING' ? 'running' : 'queued',
         outputs: result.status === 'SUCCESS' ? result.results : attempt.outputs,
-        timings:{...attempt.timings,generationObservedAt:result.status==='SUCCESS'?(attempt.timings?.generationObservedAt||Date.now()):attempt.timings?.generationObservedAt,failedAt:result.status==='FAILED'?Date.now():attempt.timings?.failedAt},
+        timings:{...attempt.timings,generationObservedAt:result.status==='SUCCESS'?(attempt.timings?.generationObservedAt||Date.now()):attempt.timings?.generationObservedAt,failedAt:['FAILED','CANCELLED'].includes(result.status)?Date.now():attempt.timings?.failedAt},
         usage: result.status === 'SUCCESS' ? parseTaskUsage(result.usage) || attempt.usage : attempt.usage,
         error: result.status === 'FAILED' ? result.errorMessage || result.failedReason?.exception_message || '生成失败' : undefined });
       if (attempt.status === 'completed' && autoSave) return archiveAttempt(id);

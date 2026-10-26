@@ -31,7 +31,7 @@ export interface UploadData {
   size?: string;
 }
 
-export type TaskRuntimeStatus = 'QUEUED' | 'RUNNING' | 'FAILED' | 'SUCCESS';
+export type TaskRuntimeStatus = 'QUEUED' | 'RUNNING' | 'FAILED' | 'SUCCESS' | 'CANCELLED';
 
 export interface SubmitTaskData {
   taskId: string;

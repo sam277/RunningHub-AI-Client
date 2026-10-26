@@ -207,3 +207,25 @@ test('task input provenance includes only effective files; row overrides shared 
   assert.deepEqual(Object.keys(selected).sort(), ['row-a|1|image', 'single|2|audio']);
   assert.equal(selected['row-a|1|image'], override);
 });
+
+test('cancel uses original regional host, bearer and task ID and rejects platform failure',async()=>{
+  globalThis.fetch=async(url,init)=>{
+    assert.equal(url,'https://www.runninghub.ai/task/openapi/cancel');
+    assert.equal(init.headers.Authorization,'Bearer original-key');
+    assert.deepEqual(JSON.parse(init.body),{apiKey:'original-key',taskId:'accepted-task'});
+    return json({code:0,msg:'success',data:null});
+  };
+  await api.cancelTask('original-key','accepted-task','global');
+  globalThis.fetch=async()=>json({code:807,msg:'task not found',data:null});
+  await assert.rejects(api.cancelTask('original-key','accepted-task','global'),/task not found/);
+  globalThis.fetch=async()=>json({},503);
+  await assert.rejects(api.cancelTask('original-key','accepted-task','global'),/503/);
+});
+test('all official cancelled status spellings are terminal and executor preserves remote cancellation',async()=>{
+  for(const status of ['CANCEL','CANCELED','CANCELLED']){
+    globalThis.fetch=async()=>json({taskId:'accepted-task',status,results:[]});
+    assert.equal((await api.queryTaskResultV2('original-key','accepted-task','global')).status,'CANCELLED');
+  }
+  globalThis.fetch=async url=>url.endsWith('/ai-app/run')?json({code:0,data:{taskId:'accepted-task',taskStatus:'RUNNING'}}):json({taskId:'accepted-task',status:'CANCEL',results:[]});
+  await assert.rejects(api.executeWorkflowTask({apiKey:'original-key',webappId:'123',taskNodes:[],autoSaveEnabled:false}),error=>error instanceof api.RemoteTaskCancelledError&&error.taskId==='accepted-task'&&error.taskSubmitted);
+});

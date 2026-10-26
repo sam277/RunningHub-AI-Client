@@ -5,7 +5,7 @@ import { localRequest,localSession,settingsStorage } from '../../services/localP
 import { resultMediaKind,resultMediaUrl } from '../../services/resultPreview';
 
 export default function ResultPreview({attempt,attempts,taskId,taskName,open,onToggle,onSelect}:{attempt?:ProductionAttempt;attempts:ProductionAttempt[];taskId?:string;taskName?:string;open:boolean;onToggle:()=>void;onSelect:(attempt:ProductionAttempt)=>void}){
-  const [index,setIndex]=useState(0),[error,setError]=useState(''),[position,setPosition]=useState<{x:number;y:number}|null>(null);
+  const [index,setIndex]=useState(0),[error,setError]=useState(''),[revealing,setRevealing]=useState(false),[position,setPosition]=useState<{x:number;y:number}|null>(null);
   const [height,setHeight]=useState(()=>Math.max(300,Math.min(700,Number(settingsStorage.getItem('rh_result_preview_height_v2'))||480)));
   const currentAttempt=useRef(attempt?.id),currentTask=useRef(taskId);currentAttempt.current=attempt?.id;currentTask.current=taskId;
   const surface=useRef<HTMLDivElement>(null),move=useRef<{x:number;y:number;left:number;top:number}|null>(null),resize=useRef<{y:number;height:number}|null>(null),previous=useRef<HTMLElement|null>(null);
@@ -21,7 +21,7 @@ export default function ResultPreview({attempt,attempts,taskId,taskName,open,onT
       <strong>结果预览</strong><span className="truncate">{taskName||attempt?.name||'当前任务'}</span>
       {attempts.length>0&&<select aria-label="预览生成记录" value={attempt?.id||''} onChange={e=>{const next=attempts.find(a=>a.id===e.target.value);if(next)onSelect(next);}}>{attempts.map(a=><option key={a.id} value={a.id}>#{attemptNumber(a)}{(a.sequenceBatch||1)>1?' B'+String(a.sequenceBatch).padStart(2,'0'):''} · {a.name}</option>)}</select>}
       <span className="ml-auto">{output?index+1:0}/{attempt?.outputs.length||0}</span>
-      {available&&<button aria-label="定位预览文件" title="打开文件所在目录" onClick={()=>void localRequest('/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:available.path})}).catch(e=>setError(e.message))}><FolderOpen size={15}/></button>}
+      {available&&<button aria-label="定位预览文件" disabled={revealing} title={revealing?"正在打开文件夹…":"打开文件所在目录"} onClick={()=>{setRevealing(true);void localRequest('/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:available.path})}).catch(e=>setError(e.message)).finally(()=>setRevealing(false));}}><FolderOpen size={15}/></button>}
       <button aria-label="放大结果预览" title="全屏" onClick={()=>void surface.current?.requestFullscreen().catch(()=>setError('暂时无法全屏，请使用播放器的放大按钮。'))}><Maximize2 size={15}/></button>
       <button aria-label="关闭结果预览" title="关闭" onClick={onToggle}><X size={17}/></button>
     </header>

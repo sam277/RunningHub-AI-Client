@@ -9,10 +9,15 @@ const REALTIME_POLL_INTERVAL_MS = 5000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export class TaskCancelledError extends Error {
-  constructor(message = '任务已停止追踪') {
+  constructor(message = '任务已取消') {
     super(message);
     this.name = 'TaskCancelledError';
   }
+}
+
+export class RemoteTaskCancelledError extends TaskCancelledError {
+  readonly taskSubmitted = true;
+  constructor(readonly taskId:string) { super('平台已确认取消任务'); this.name='RemoteTaskCancelledError'; }
 }
 
 export class TaskExecutionError extends Error {
@@ -308,6 +313,8 @@ export const executeWorkflowTask = async ({
           savedCount,
         };
       }
+
+      if (result.status === 'CANCELLED') throw new RemoteTaskCancelledError(submitResult.taskId);
 
       if (result.status === 'FAILED') {
         failurePhase = 'generation';

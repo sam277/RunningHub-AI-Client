@@ -31,6 +31,7 @@ interface StepEditorProps {
     runLabel?: string;
     onSnapshotChange?: () => void;
     productionLayout?: boolean;
+    cancelPending?:boolean;
     applicationId?:string;
 }
 
@@ -92,7 +93,7 @@ const hasSameNodeStructure = (left: NodeInfo[], right: NodeInfo[]) => {
     });
 };
 
-const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange, runLabel, productionLayout = false, applicationId = '' }, ref) => {
+const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys, isConnected, runType, webAppInfo, onBack, onRun, onCancel, failedBatchIndices = new Set(), onRetryTask, instanceType = 'default', onInstanceTypeChange, initialBatchList = EMPTY_BATCH_LIST, initialBatchTaskName = '', initialPendingFiles = EMPTY_PENDING_FILES, mode = 'app', standardModelConfig, onSnapshotChange, runLabel, productionLayout = false, cancelPending=false, applicationId = '' }, ref) => {
     const editorDomId = useId().replace(/:/g, '-');
     const [textKey,setTextKey]=useState(''),[allParameters,setAllParameters]=useState(false),[parameterSearch,setParameterSearch]=useState('');
     const preferenceKey='rh_editor_pins_'+(applicationId||webAppInfo?.webappName||'default');
@@ -1111,7 +1112,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                         className="flex-1 flex justify-center items-center gap-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-5 rounded-lg shadow-md shadow-red-200 dark:shadow-red-900/20 transform hover:-translate-y-0.5 transition-all text-sm"
                     >
                         <X className="w-4 h-4" />
-                        {productionLayout?'停止后续':'取消运行'}
+                        取消运行
                     </button>
                 ) : (
                     <button
@@ -1139,7 +1140,7 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                                 className="flex-1 flex justify-center items-center gap-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-5 rounded-lg shadow-md shadow-red-200 dark:shadow-red-900/20 transform hover:-translate-y-0.5 transition-all text-sm"
                             >
                                 <X className="w-4 h-4" />
-                                {productionLayout?'停止后续':'取消批量'}
+                                取消批量
                             </button>
                         ) : (!productionLayout||batchList.length>0) ? (
                             <button
@@ -1165,8 +1166,8 @@ const StepEditor = forwardRef<StepEditorRef, StepEditorProps>(({ nodes, apiKeys,
                     </>
                 )}
                 </>}
-            {productionLayout&&<>{runType!=='none'?<button className="stop-task" onClick={onCancel}>停止后续</button>:<button className="run-task" disabled={!isConnected||hasUploadingFiles} onClick={()=>batchList.length?handleBatchRun():onRun(localNodes,undefined,pendingFiles,undefined,instanceType)}>{batchList.length?'运行 '+batchList.length+' 组':runLabel||'运行'}</button>}<button disabled={!isConnected||runType!=='none'} onClick={()=>setIsBatchModalOpen(true)}>批量设置{batchList.length?' · '+batchList.length+'组':''}</button></>}
-            {productionLayout&&<div className="editor-secondary-options"><button disabled={runType!=='none'} onClick={()=>onInstanceTypeChange?.(instanceType==='plus'?'default':'plus')}>PLUS {instanceType==='plus'?'已开':'已关'}</button>{webAppInfo&&<button onClick={()=>setIsAppInfoModalOpen(true)}>应用详情</button>}</div>}
+            {productionLayout&&<><button className="run-task" disabled={runType!=='none'||!isConnected||hasUploadingFiles} onClick={()=>batchList.length?handleBatchRun():onRun(localNodes,undefined,pendingFiles,undefined,instanceType)}>{batchList.length?'运行 '+batchList.length+' 组':runLabel||'运行'}</button><button className="plus-toggle" aria-label="PLUS 当前任务" aria-pressed={instanceType==='plus'} disabled={runType!=='none'} onClick={()=>onInstanceTypeChange?.(instanceType==='plus'?'default':'plus')} title="PLUS 实例，可能消耗更多积分">PLUS</button><button className="stop-task" disabled={runType==='none'||cancelPending} onClick={onCancel}>{cancelPending?'取消中':'取消'}</button><button disabled={!isConnected||runType!=='none'} onClick={()=>setIsBatchModalOpen(true)}>批量设置{batchList.length?' · '+batchList.length+'组':''}</button></>}
+            {productionLayout&&<div className="editor-secondary-options">{webAppInfo&&<button onClick={()=>setIsAppInfoModalOpen(true)}>应用详情</button>}</div>}
             </div>
         </div>
     );
