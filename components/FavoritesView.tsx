@@ -32,6 +32,7 @@ const Toast = ({ message, type, onClose }: { message: string, type: 'success' | 
 };
 
 const FavoritesView: React.FC<FavoritesViewProps> = ({ favorites, onSelectApp, apiKeys, onUpdateFavorites, onRename }) => {
+    const [removed,setRemoved]=useState<{item:Favorite;index:number}|null>(null);
     const [isSyncing, setIsSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState(0);
     const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -197,6 +198,7 @@ const FavoritesView: React.FC<FavoritesViewProps> = ({ favorites, onSelectApp, a
                 </div>
             </div>
 
+            {removed&&<button className="mb-3 text-xs text-brand-600" onClick={()=>{const next=[...favorites];if(!next.some(item=>item.webappId===removed.item.webappId))next.splice(Math.min(removed.index,next.length),0,removed.item);onUpdateFavorites(next);setRemoved(null);}}>撤销取消收藏</button>}
             {favorites.length > 0 ? (
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4 pb-10">
                     {favorites.map((fav) => {
@@ -207,7 +209,7 @@ const FavoritesView: React.FC<FavoritesViewProps> = ({ favorites, onSelectApp, a
                                 key={fav.webappId}
                                 className="group relative flex flex-col bg-white dark:bg-[#1a1d24] rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-xl hover:border-brand-300 dark:hover:border-brand-700 transition-all duration-300 overflow-hidden"
                             >
-                                {onRename && <button onClick={() => onRename(fav)} className="z-10 px-3 py-2 text-left text-xs text-brand-600">修改收藏名称</button>}
+                                <div className="z-10 flex items-center justify-between px-3 py-2 text-xs">{onRename&&<button onClick={()=>onRename(fav)} className="text-brand-600">改名</button>}<button aria-label={'首页取消收藏 '+fav.name} title="取消收藏" className="text-slate-500" onClick={()=>{setRemoved({item:fav,index:favorites.findIndex(item=>item.webappId===fav.webappId)});onUpdateFavorites(favorites.filter(item=>item.webappId!==fav.webappId));}}>取消收藏</button></div>
                                 {/* Card Image Area - 3:4 Aspect Ratio */}
                                 <div className="relative aspect-[3/4] bg-slate-100 dark:bg-[#252830] overflow-hidden">
                                     {info?.covers?.[0]?.thumbnailUri ? (

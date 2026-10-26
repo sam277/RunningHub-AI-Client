@@ -555,7 +555,7 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string, resolvedR
       thirdPartyConsumeMoney: firstItem.thirdPartyConsumeMoney || '0',
       consumeMoney: firstItem.consumeMoney || '0',
       consumeCoins: firstItem.consumeCoins == null || firstItem.consumeCoins === '' ? '' : String(firstItem.consumeCoins),
-      taskCostTime: firstItem.taskCostTime || '0',
+      taskCostTime: firstItem.taskCostTime == null ? '' : String(firstItem.taskCostTime),
     };
   } else if (code === 805 && json.data?.failedReason) {
     responseData = { failedReason: json.data.failedReason };

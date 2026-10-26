@@ -172,3 +172,9 @@ export async function migrateLegacyWorkspace(force=false): Promise<number> {
 }
 
 
+
+export interface GenerationNumber {sequence:number;displaySequence:number;sequenceBatch:number;}
+export async function allocateGenerationNumber(id:string):Promise<GenerationNumber>{
+  if(localSession())return localRequest<GenerationNumber>('/sequence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'attempt:'+id})});
+  const sequence=await allocateGenerationSequence(id);return {sequence,displaySequence:sequence,sequenceBatch:1};
+}

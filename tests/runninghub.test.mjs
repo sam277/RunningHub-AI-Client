@@ -30,6 +30,10 @@ test('unreported consumption stays unknown while a genuine zero remains reported
   assert.equal(api.parseTaskUsage({consumeCoins:'not-a-number'}).coinsReported,false);
   assert.equal(api.parseTaskUsage({consumeCoins:'0'}).coinsReported,true);
   assert.equal(api.parseTaskUsage({consumeCoins:'12.5'}).coins,12.5);
+  assert.equal(api.parseTaskUsage({taskCostTime:''}).taskTimeReported,false);
+  assert.equal(api.parseTaskUsage({taskCostTime:'0'}).taskTimeReported,true);
+  assert.equal(api.parseTaskUsage({taskCostTime:'Infinity'}).taskTime,0);
+  assert.equal(api.parseTaskUsage({taskCostTime:'-1'}).taskTimeReported,false);
 });
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const queue = (limit, running = 0, queued = 0) => json({ code: 0, data: { concurrentLimit: limit, runningCount: String(running), queuedCount: String(queued), totalCurrentTasks: String(running + queued) } });

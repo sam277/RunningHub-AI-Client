@@ -1,2 +1,12 @@
 @echo off
-call "%~dp0启动工作台.cmd"
+setlocal
+cd /d "%~dp0"
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Node.js 24 or newer is required.
+  pause
+  exit /b 1
+)
+node "scripts\launch-workbench.mjs" %*
+if errorlevel 1 pause
+endlocal

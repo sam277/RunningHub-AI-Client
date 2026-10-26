@@ -42,7 +42,7 @@ export async function createLocalAPI({project,dataDirectory,storeOptions}={}){
         if(path==='/snapshots'&&method==='GET')return send(res,await store.list(url.searchParams.get('prefix')||''));
         if(path==='/import'&&method==='POST')return send(res,await store.importSnapshots((await json(req)).entries));
         if(path.startsWith('/snapshot/')){const key=decodeURIComponent(path.slice('/snapshot/'.length));if(method==='GET')return send(res,{value:await store.read(key)});if(method==='PUT')return send(res,await store.write(key,(await json(req)).value));if(method==='PATCH')return send(res,await store.patch(key,(await json(req)).fields));}
-        if(path==='/sequence'&&method==='POST')return send(res,{sequence:await store.sequence((await json(req)).key)});
+        if(path==='/sequence'&&method==='POST')return send(res,await store.reserveNumber((await json(req)).key));
         if(path.startsWith('/asset/')){const hash=path.slice('/asset/'.length);if(method==='PUT')return send(res,await store.receive('assets',hash,req));if(method==='GET'){const file=await store.assetPath(hash);res.setHeader('Content-Type','application/octet-stream');res.setHeader('Cache-Control','no-store');createReadStream(file).on('error',()=>res.destroy()).pipe(res);return;}}
         if(path.startsWith('/result/')&&method==='GET'){
           const file=await store.resultPath(decodeURIComponent(path.slice('/result/'.length))),stat=await fs.stat(file);let start=0,end=stat.size-1;
@@ -50,6 +50,8 @@ export async function createLocalAPI({project,dataDirectory,storeOptions}={}){
           const extension=file.split('.').pop().toLowerCase();res.setHeader('Content-Type',({mp4:'video/mp4',webm:'video/webm',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',mp3:'audio/mpeg',wav:'audio/wav'})[extension]||'application/octet-stream');res.setHeader('Cache-Control','no-store');res.setHeader('Accept-Ranges','bytes');res.setHeader('Content-Length',String(end-start+1));createReadStream(file,{start,end}).on('error',()=>res.destroy()).pipe(res);return;
         }
         if(path.startsWith('/result/')&&method==='PUT')return send(res,await store.receive('results',decodeURIComponent(path.slice('/result/'.length)),req));
+        if(path==='/numbering'&&method==='GET')return send(res,await store.numbering());
+        if(path==='/numbering/reset'&&method==='POST'){const body=await json(req);if(body.confirm!==true)throw new Error('请确认开启新编号批次');return send(res,await store.resetNumbering(body.expectedBatch));}
         if(path==='/backups'&&method==='GET')return send(res,await store.backups());
         if(path==='/backups'&&method==='POST')return send(res,await store.backup());
         if(path==='/restore'&&method==='POST'){const body=await json(req);if(body.confirmId!==body.id)throw new Error('请确认要恢复的备份');return send(res,await store.restore(body.id));}

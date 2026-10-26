@@ -28,6 +28,7 @@ export interface TaskUsageStats {
   coins: number;
   thirdParty: number;
   taskTime: number;
+  taskTimeReported?: boolean;
 }
 
 export interface ExecuteTaskCallbacks {
@@ -339,5 +340,6 @@ export const executeWorkflowTask = async ({
 export function parseTaskUsage(usage?: {consumeCoins?:string;thirdPartyConsumeMoney?:string;taskCostTime?:string}): TaskUsageStats | undefined {
   if(!usage)return undefined;
   const reported=typeof usage.consumeCoins==='string'&&usage.consumeCoins.trim()!==''&&Number.isFinite(Number(usage.consumeCoins))&&Number(usage.consumeCoins)>=0;
-  return {coins:reported?Number(usage.consumeCoins):0,coinsReported:reported,thirdParty:parseFloat(usage.thirdPartyConsumeMoney||'')||0,taskTime:parseInt(usage.taskCostTime||'',10)||0};
+  const timeReported=typeof usage.taskCostTime==='string'&&usage.taskCostTime.trim()!==''&&Number.isFinite(Number(usage.taskCostTime))&&Number(usage.taskCostTime)>=0;
+  return {coins:reported?Number(usage.consumeCoins):0,coinsReported:reported,thirdParty:parseFloat(usage.thirdPartyConsumeMoney||'')||0,taskTime:timeReported?Number(usage.taskCostTime):0,taskTimeReported:timeReported};
 }

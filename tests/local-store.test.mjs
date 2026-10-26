@@ -42,7 +42,7 @@ test('archived media is streamed locally with authenticated range requests',asyn
 
 test('legacy archived files are copied with record numbers while originals are preserved',async()=>{
   const root=await fs.mkdtemp(join(tmpdir(),'rh-legacy-')),source=join(root,'legacy');await fs.mkdir(source);const store=await openLocalStore(join(root,'data'),{...protection,legacyResultsDirectory:source});
-  try{const id='12345678-1234-4234-8234-123456789abc',filename='old_'+id+'_1.mp4',bytes=Buffer.from('legacy output');await fs.writeFile(join(source,filename),bytes);await store.importSnapshots([{key:'attempt:'+id,value:{id,createdAt:1,files:[{index:0,filename,path:'legacy/'+filename}]}}]);const attempt=await store.read('attempt:'+id);assert.equal(attempt.sequence,1);assert.equal(attempt.files[0].filename,'0001_'+filename);assert.deepEqual(await fs.readFile(attempt.files[0].path),bytes);assert.deepEqual(await fs.readFile(join(source,filename)),bytes);assert.equal(attempt.localResultsMissing,false);await store.backup();await fs.unlink(attempt.files[0].path);assert.equal((await store.read('attempt:'+id)).localResultsMissing,true);await assert.rejects(store.backup(),/文件缺失/);}finally{await store.close();await fs.rm(root,{recursive:true,force:true});}
+  try{const id='12345678-1234-4234-8234-123456789abc',filename='old_'+id+'_1.mp4',bytes=Buffer.from('legacy output');await fs.writeFile(join(source,filename),bytes);await store.importSnapshots([{key:'attempt:'+id,value:{id,createdAt:1,files:[{index:0,filename,path:'legacy/'+filename}]}}]);const attempt=await store.read('attempt:'+id);assert.equal(attempt.sequence,1);assert.equal(attempt.files[0].filename,'0001_'+filename);assert.deepEqual(await fs.readFile(attempt.files[0].path),bytes);assert.deepEqual(await fs.readFile(join(source,filename)),bytes);assert.equal(attempt.localResultsMissing,false);await store.backup();await fs.unlink(attempt.files[0].path);assert.equal((await store.read('attempt:'+id)).localResultsMissing,true);await assert.rejects(store.backup(),/文件缺失/);const partial=await store.backup(true);assert.equal(partial.incomplete,true);await assert.rejects(store.restore(partial.id),/不完整/);}finally{await store.close();await fs.rm(root,{recursive:true,force:true});}
 });
 
 test('directory migration preserves accounts, files and backup history, and refuses nonempty targets',async()=>{
@@ -65,4 +65,29 @@ test('restoring an old workspace preserves later submissions and their original 
     assert.equal((await f.store.read('attempt:done')).status,'saved');
     assert.equal((await f.store.settings()).rh_favorites,'old');assert.equal(await f.store.sequence('attempt:next'),2);
   }finally{await f.close();}
+});
+
+test('number reservations are idempotent, survive restart and keep batch counters across restore',async()=>{
+ const f=await fixture();try{
+  const first=await f.store.reserveNumber('attempt:one');assert.deepEqual(first,{sequence:1,displaySequence:1,sequenceBatch:1});
+  assert.deepEqual(await f.store.reserveNumber('attempt:one'),first);
+  const backup=await f.store.backup();await f.store.resetNumbering(1);
+  const numbers=await Promise.all(Array.from({length:12},(_,i)=>f.store.reserveNumber('attempt:batch-'+i)));
+  assert.equal(new Set(numbers.map(n=>n.sequence)).size,12);assert.deepEqual(numbers[0],{sequence:2,displaySequence:1,sequenceBatch:2});
+  await f.reopen();assert.equal((await f.store.numbering()).next,13);assert.equal((await f.store.numbering()).sequenceBatch,2);
+  await f.store.restore(backup.id);assert.deepEqual(await f.store.reserveNumber('attempt:batch-0'),numbers[0]);
+  assert.deepEqual(await f.store.reserveNumber('attempt:after'),{sequence:14,displaySequence:13,sequenceBatch:2});
+  await assert.rejects(f.store.resetNumbering(1),/批次已变化/);
+  await f.store.write('attempt:pending',{status:'unknown'});await assert.rejects(f.store.resetNumbering(2),/待确认/);
+ }finally{await f.close();}
+});
+test('new-batch output prefixes remain unchanged on reopening the local library',async()=>{
+ const f=await fixture();try{
+  await f.store.reserveNumber('old');await f.store.resetNumbering(1);
+  const id='12345678-1234-4234-8234-123456789abc',number=await f.store.reserveNumber('attempt:'+id),filename='0001_B02_result_'+id+'_1.mp4';
+  const receipt=await f.store.receive('results',filename,Readable.from('batch2 bytes'));
+  await f.store.write('attempt:'+id,{id,createdAt:1,...number,status:'saved',files:[{index:0,...receipt}]});
+  await f.reopen();const record=await f.store.read('attempt:'+id);assert.equal(record.files[0].filename,filename);assert.equal(record.displaySequence,1);assert.equal(record.sequence,2);
+  assert.deepEqual(await fs.readdir(join(f.root,'results')),[filename]);
+ }finally{await f.close();}
 });

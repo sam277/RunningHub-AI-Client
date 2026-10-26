@@ -3,13 +3,16 @@ import { executeWorkflowTask, ExecuteTaskRequest, TaskExecutionError, TaskCancel
 import { isCapacityLimitedError, queryTaskResult } from './api';
 import { getResolvedRunningHubRegion } from './runningHubRegion';
 import { saveFileFromUrl } from './autoSaveService';
-import { listWorkspaceData, readWorkspaceData, writeWorkspaceData, patchWorkspaceFields, allocateGenerationSequence, listWorkspaceMetadata, readWorkspaceMetadata } from './workspaceStorage';
+import { listWorkspaceData, readWorkspaceData, writeWorkspaceData, patchWorkspaceFields, allocateGenerationNumber, listWorkspaceMetadata, readWorkspaceMetadata } from './workspaceStorage';
 import { flushLocalSettings } from './localPersistence';
 
 export type AttemptStatus = 'preparing' | 'submitting' | 'unknown' | 'queued' | 'running' | 'query_failed' | 'generation_failed' | 'rejected' | 'interrupted' | 'completed' | 'downloading' | 'download_failed' | 'saved';
 export interface ProductionAttempt {
   parentAttemptId?: string;
   sequence?: number;
+  displaySequence?:number;
+  sequenceBatch?:number;
+  timings?:{submissionStartedAt?:number;acceptedAt?:number;runningObservedAt?:number;generationObservedAt?:number;failedAt?:number;archiveStartedAt?:number;archivedAt?:number};
   localResultsMissing?: boolean;
   missingResultIndexes?: number[];
   id: string; cardId: string; name: string; webappId: string; createdAt: number; updatedAt: number;
@@ -33,10 +36,10 @@ const notify = () => { if (typeof window !== 'undefined') window.dispatchEvent(n
 export const listAttempts = async () => (await listWorkspaceData<ProductionAttempt>('attempt:')).sort((a,b) => b.createdAt-a.createdAt);
 export const listAttemptSummaries = async () => (await listWorkspaceMetadata<ProductionAttempt>('attempt:')).sort((a,b)=>b.createdAt-a.createdAt);
 export const loadAttemptInputs = (id:string) => readWorkspaceData<ProductionAttempt>('attempt:'+id);
-export const attemptNumber = (attempt:ProductionAttempt) => attempt.sequence ? String(attempt.sequence).padStart(4,'0') : '旧记录';
+export const attemptNumber = (attempt:ProductionAttempt) => attempt.sequence ? String(attempt.displaySequence??attempt.sequence).padStart(4,'0') : '旧记录';
 export const saveAttempt = async (attempt: ProductionAttempt) => {
   const next = { ...attempt, updatedAt: Date.now() };
-  const mutable = { status: next.status, updatedAt: next.updatedAt, taskId: next.taskId, submittedNodes: next.submittedNodes, outputs: next.outputs, files: next.files, error: next.error, usage: next.usage };
+  const mutable = { timings:next.timings,status: next.status, updatedAt: next.updatedAt, taskId: next.taskId, submittedNodes: next.submittedNodes, outputs: next.outputs, files: next.files, error: next.error, usage: next.usage };
   if (!await patchWorkspaceFields('attempt:'+attempt.id, mutable)) await writeWorkspaceData('attempt:'+attempt.id, next);
   notify(); return next;
 };
@@ -63,7 +66,7 @@ export async function archiveAttempt(id: string, onlyIndex?: number): Promise<Pr
     if (!attempt) throw new Error('找不到生成记录');
     if (attempt.localResultsMissing) attempt={...attempt,files:attempt.files.filter(file=>!attempt!.missingResultIndexes?.includes(file.index))};
     if (!attempt.outputs.length) return saveAttempt({ ...attempt, status: 'completed', error: '接口未返回可保存的结果文件。' });
-    attempt = await saveAttempt({ ...attempt, status: 'downloading', error: undefined });
+    attempt = await saveAttempt({ ...attempt, status: 'downloading', timings:{...attempt.timings,archiveStartedAt:Date.now()}, error: undefined });
     for (let index=0; index<attempt.outputs.length; index++) {
       if (onlyIndex !== undefined && onlyIndex !== index) continue;
       if (attempt.files.some(file => file.index === index)) continue;
@@ -71,7 +74,7 @@ export async function archiveAttempt(id: string, onlyIndex?: number): Promise<Pr
       let receipt: { filename: string; path: string } | undefined;
       try {
         const extension = outputFileExtension(output);
-        const prefix=attempt.sequence ? attemptNumber(attempt)+'_' : '';
+        const prefix=attempt.sequence ? attemptNumber(attempt)+'_'+((attempt.sequenceBatch||1)>1?'B'+String(attempt.sequenceBatch).padStart(2,'0')+'_':'') : '';
         await saveFileFromUrl(output.fileUrl || output.downloadUrl || '', prefix+attempt.name.slice(0,60)+'_'+attempt.id+'_'+(index+1)+'.'+extension, extension, false, saved => { receipt = saved; });
         if (!receipt) throw new Error('保存没有返回文件位置，不能确认归档成功');
         attempt = await saveAttempt({ ...attempt, files: [...attempt.files, { index, ...receipt }], error: undefined });
@@ -79,7 +82,7 @@ export async function archiveAttempt(id: string, onlyIndex?: number): Promise<Pr
         return saveAttempt({ ...attempt, status: 'download_failed', error: error?.message || '下载失败' });
       }
     }
-    return saveAttempt({ ...attempt, status: attempt.files.length === attempt.outputs.length ? 'saved' : 'completed', error: undefined });
+    return saveAttempt({ ...attempt, status: attempt.files.length === attempt.outputs.length ? 'saved' : 'completed', timings:{...attempt.timings,archivedAt:attempt.files.length===attempt.outputs.length?Date.now():undefined},error: undefined });
   } finally { downloading.delete(id); }
 }
 
@@ -88,7 +91,7 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
   const id=crypto.randomUUID();
   let attempt: ProductionAttempt = {
     parentAttemptId: context.parentAttemptId,
-    id, sequence:await allocateGenerationSequence(id), cardId: context.cardId, name: context.name || '任务', webappId: request.webappId,
+    id, ...await allocateGenerationNumber(id), cardId: context.cardId, name: context.name || '任务', webappId: request.webappId,
     accountSignature: await signature(request.apiKey), accountId: context.account.id, accountNote: context.account.note || '未备注账号',
     region: getResolvedRunningHubRegion(request.apiKey), createdAt: Date.now(), updatedAt: Date.now(), status: 'preparing',
     originalNodes: structuredClone(request.taskNodes), pendingFiles: selectPendingFilesForTask(request.taskNodes, request.pendingFiles, request.taskIndex), unitIndex: request.taskIndex || 0,
@@ -105,19 +108,19 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
         onStatusChange: async status => {
           request.callbacks?.onStatusChange?.(status);
           if (attempt.taskId && (status === 'RUNNING' || status === 'QUEUED') && attempt.status !== (status === 'RUNNING' ? 'running' : 'queued')) {
-            attempt = await saveAttempt({ ...attempt, status: status === 'RUNNING' ? 'running' : 'queued' });
+            attempt = await saveAttempt({ ...attempt, status: status === 'RUNNING' ? 'running' : 'queued',timings:{...attempt.timings,runningObservedAt:status==='RUNNING'?(attempt.timings?.runningObservedAt||Date.now()):attempt.timings?.runningObservedAt} });
           }
         },
         beforeSubmit: async nodes => {
-          attempt = { ...attempt, submittedNodes: structuredClone(nodes), status: 'submitting' };
+          attempt = { ...attempt, submittedNodes: structuredClone(nodes),timings:{...attempt.timings,submissionStartedAt:Date.now()}, status: 'submitting' };
           attempt = await saveAttempt(attempt);
         },
         onAccepted: async taskId => {
-          attempt = { ...attempt, taskId, status: 'queued' };
+          attempt = { ...attempt, taskId,timings:{...attempt.timings,acceptedAt:Date.now()}, status: 'queued' };
           attempt = await saveAttempt(attempt);
         },
         onGenerationResult: async outputs => {
-          attempt = { ...attempt, status: 'completed', outputs };
+          attempt = { ...attempt, status: 'completed',timings:{...attempt.timings,generationObservedAt:Date.now()}, outputs };
           attempt = await saveAttempt(attempt);
         },
       },
@@ -129,7 +132,7 @@ export async function runProductionTask(request: ExecuteTaskRequest, context: { 
     const status: AttemptStatus = error instanceof TaskCancelledError ? (attempt.taskId ? 'query_failed' : attempt.status === 'submitting' ? 'unknown' : 'interrupted') :
       attempt.taskId ? (error instanceof TaskExecutionError && error.phase === 'generation' ? 'generation_failed' : 'query_failed') :
       attempt.status === 'submitting' ? (isCapacityLimitedError(error) || isAccountUnavailableError(error) || (/^4\d\d$/.test(String(error?.code))) ? 'rejected' : 'unknown') : 'interrupted';
-    await saveAttempt({ ...attempt, status, error: error?.message || '执行中断' }).catch(() => {});
+    await saveAttempt({ ...attempt, status,timings:{...attempt.timings,failedAt:['generation_failed','rejected','interrupted'].includes(status)?Date.now():undefined}, error: error?.message || '执行中断' }).catch(() => {});
     if (attempt.taskId && !(error instanceof TaskExecutionError)) throw new TaskExecutionError(attempt.taskId, error);
     throw error;
   } finally { active.delete(attempt.id); }
@@ -160,6 +163,7 @@ export async function recoverAttempt(id: string, accounts: ApiKeyEntry[], autoSa
       const result = await queryTaskResult(account.apiKey, attempt.taskId, attempt.region === 'cn' ? 'cn' : 'global');
       attempt = await saveAttempt({ ...attempt, status: result.status === 'SUCCESS' ? 'completed' : result.status === 'FAILED' ? 'generation_failed' : result.status === 'RUNNING' ? 'running' : 'queued',
         outputs: result.status === 'SUCCESS' ? result.results : attempt.outputs,
+        timings:{...attempt.timings,generationObservedAt:result.status==='SUCCESS'?(attempt.timings?.generationObservedAt||Date.now()):attempt.timings?.generationObservedAt,failedAt:result.status==='FAILED'?Date.now():attempt.timings?.failedAt},
         usage: result.status === 'SUCCESS' ? parseTaskUsage(result.usage) || attempt.usage : attempt.usage,
         error: result.status === 'FAILED' ? result.errorMessage || result.failedReason?.exception_message || '生成失败' : undefined });
       if (attempt.status === 'completed' && autoSave) return archiveAttempt(id);

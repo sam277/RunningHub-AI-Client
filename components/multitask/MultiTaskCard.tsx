@@ -1,3 +1,4 @@
+import RunLog, { RunLogEntry } from './RunLog';
 import { archiveOutputUrl } from '../../services/production';
 import { localSession } from '../../services/localPersistence';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -39,7 +40,7 @@ export interface MultiTaskCardRunState {
   progressText: string;
   currentTaskId: string | null;
   taskIds: string[];
-  logs: string[];
+  logs: RunLogEntry[];
   outputs: TaskOutput[];
   error: string | null;
   failedBatchIndices: Set<number>;
@@ -67,6 +68,7 @@ export interface MultiTaskCardData {
 }
 
 interface MultiTaskCardProps {
+  ordinal?: number;
   card: MultiTaskCardData;
   apiKeys: string[];
   editorRef: React.Ref<StepEditorRef>;
@@ -196,6 +198,7 @@ const renderOutputThumb = (output: TaskOutput) => {
 
 const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   card,
+  ordinal,
   apiKeys,
   editorRef,
   isBusy,
@@ -279,7 +282,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <label className="flex min-w-0 items-center gap-2"><span className="shrink-0 text-xs text-slate-500">任务名称</span><input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
+              <label className="flex min-w-0 items-center gap-2">{ordinal&&<span className="task-ordinal" aria-label="当前任务顺序">{ordinal}.</span>}<span className="shrink-0 text-xs text-slate-500">任务名称</span><input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
           disabled={isBusy} onChange={event => onNameChange(event.target.value)}
           className="min-w-0 w-full max-w-xl rounded border border-slate-300 bg-transparent px-2 py-1 text-sm dark:border-slate-600" /></label>
               <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${statusMeta.className}`}>
@@ -308,7 +311,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-brand-600">
-          <button disabled={!card.webappId} onClick={onFavorite}>收藏应用 / 备注名称</button>
+          <button disabled={!card.webappId} onClick={onFavorite}>收藏应用</button>
           <button disabled={!card.isConnected} onClick={onSaveTemplate}>保存为模板</button>
           <button disabled={!card.isConnected || isBusy} onClick={onVariants}>生成提示词变体</button>
 
@@ -582,15 +585,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
             {'\u8fd0\u884c\u65e5\u5fd7'}
           </div>
           <div className="max-h-40 overflow-y-auto rounded-xl bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-300">
-            {displayLogs.length === 0 ? (
-              <div className="text-slate-500">{'\u6682\u65e0\u65e5\u5fd7'}</div>
-            ) : (
-              displayLogs.map((log, index) => (
-                <div key={`${card.id}-log-${index}`} className="mb-1 break-all">
-                  {log}
-                </div>
-              ))
-            )}
+            <RunLog entries={displayLogs}/>
           </div>
         </div>
       </div>
