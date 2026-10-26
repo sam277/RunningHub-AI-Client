@@ -1,511 +1,84 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Check, Coins, Globe2, Key, Loader2, Plus, RefreshCw, Save, Trash2, User, X } from 'lucide-react';
-import { ApiInfo, ApiKeyEntry, AutoSaveConfig, RunningHubRegionMode } from '../types';
+import { listAttemptSummaries } from '../services/production';
+import React, { useRef, useState } from 'react';
+import { Plus, RefreshCw, Trash2, X, Eye, EyeOff, Pencil, Copy, Search, Upload, Download } from 'lucide-react';
+import { ApiKeyEntry, AutoSaveConfig, RunningHubRegionMode } from '../types';
 import { getApiInfo } from '../services/api';
-import {
-  getRunningHubRegionLabel,
-  getRunningHubRegionMode,
-  setRunningHubRegionMode,
-} from '../services/runningHubRegion';
-
-const STORAGE_KEY_SAVE_API = 'rh_save_api_enabled';
-
-const createEmptyApiKeyEntry = (): ApiKeyEntry => ({
-  id: crypto.randomUUID(),
-  apiKey: '',
-  concurrency: 1,
-  accountInfo: null,
-  apiInfo: null,
-});
-
-const ensureEntry = (entry?: ApiKeyEntry | null): ApiKeyEntry => ({
-  ...createEmptyApiKeyEntry(),
-  ...(entry || {}),
-  concurrency: Math.max(1, Number(entry?.concurrency) || 1),
-  accountInfo: entry?.accountInfo ?? null,
-  apiInfo: entry?.apiInfo ?? null,
-});
-
-const ensureApiEntries = (entries: ApiKeyEntry[]): ApiKeyEntry[] => {
-  if (!Array.isArray(entries) || entries.length === 0) {
-    return [createEmptyApiKeyEntry()];
-  }
-  return entries.map(ensureEntry);
-};
-
-const maskApiKey = (apiKey: string) => {
-  const trimmed = apiKey.trim();
-  if (!trimmed) return '未填写 API Key';
-  if (trimmed.length <= 12) return trimmed;
-  return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`;
-};
-
-const formatApiType = (apiType?: string | null) => {
-  const normalized = String(apiType || '').trim().toUpperCase();
-  const typeMap: Record<string, string> = {
-    CONSUMER: '消费级',
-    PERSONAL: '消费级',
-    NORMAL: '消费级',
-    ENTERPRISE: '企业',
-    SHARED: '共享',
-    ENTERPRISE_SHARED: '企业共享',
-    ENTERPRISE_SHARE: '企业共享',
-    CORP_SHARED: '企业共享',
-    CORPORATE_SHARED: '企业共享',
-  };
-  return typeMap[normalized] || apiType || '-';
-};
-
-const getConcurrencyFromInfo = (info?: ApiInfo | null) =>
-  Math.max(1, Number(info?.queue?.concurrentLimit) || 1);
+import { getRunningHubRegionMode, setRunningHubRegionMode } from '../services/runningHubRegion';
+import { settingsStorage, localSession, flushLocalSettings } from '../services/localPersistence';
+import { parseAccountImport, mergeImportedAccounts, exportAccounts, maskAccountKey } from '../services/accountManagement';
 
 interface SettingsModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  apiKeys: ApiKeyEntry[];
-  enterpriseApi: ApiKeyEntry;
-  onUpdateApiKeys: (keys: ApiKeyEntry[], saveToStorage?: boolean) => void;
-  onUpdateEnterpriseApi: (key: ApiKeyEntry, saveToStorage?: boolean) => void;
-  autoSaveConfig: AutoSaveConfig;
-  onUpdateAutoSave: (config: AutoSaveConfig) => void;
+  embedded?:boolean;isOpen:boolean;onClose:()=>void;apiKeys:ApiKeyEntry[];enterpriseApi:ApiKeyEntry;
+  onUpdateApiKeys:(keys:ApiKeyEntry[],saveToStorage?:boolean)=>void;
+  onUpdateEnterpriseApi:(key:ApiKeyEntry,saveToStorage?:boolean)=>void;
+  autoSaveConfig:AutoSaveConfig;onUpdateAutoSave:(config:AutoSaveConfig)=>void;
 }
-
-const AccountCards: React.FC<{ entry: ApiKeyEntry; title: string }> = ({ entry, title }) => {
-  const info = entry.apiInfo;
-  const account = info?.account || entry.accountInfo;
-  const queue = info?.queue;
-
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/20">
-      <div className="mb-2.5 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold text-slate-800 dark:text-white">{title}</div>
-          <div className="mt-1 flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
-            <span className="truncate">{maskApiKey(entry.apiKey)}</span>
-            {info?.region && (
-              <span className="shrink-0 rounded bg-brand-50 px-1.5 py-0.5 font-medium text-brand-600 dark:bg-brand-900/20 dark:text-brand-300">
-                {getRunningHubRegionLabel(info.region)}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[11px] font-semibold text-slate-500 shadow-sm dark:border-slate-700 dark:bg-[#0F1115] dark:text-slate-300">
-          <span className="text-[10px] text-slate-400 dark:text-slate-500">并发</span>
-          <span>{entry.concurrency || getConcurrencyFromInfo(info)}</span>
-        </div>
+export default function SettingsModal({embedded=false,isOpen,onClose,apiKeys,enterpriseApi,onUpdateApiKeys,onUpdateEnterpriseApi}:SettingsModalProps){
+  const entries=apiKeys.filter(a=>a.apiKey.trim()||a.note?.trim());
+  const latest=useRef(apiKeys);latest.current=apiKeys;
+  const [persist,setPersist]=useState(()=>settingsStorage.getItem('rh_save_api_enabled')==='true');
+  const persistRef=useRef(persist);persistRef.current=persist;
+  const [query,setQuery]=useState(''),[filter,setFilter]=useState('all');
+  const [form,setForm]=useState<{id?:string;apiKey:string;note:string}|null>(null);
+  const [reveal,setReveal]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('');
+  const [tool,setTool]=useState<'import'|'export'|null>(null),[importText,setImportText]=useState(''),[exportFormat,setExportFormat]=useState<'text'|'json'>('text');
+  const [busy,setBusy]=useState(false),[expanded,setExpanded]=useState<string|null>(null),[advanced,setAdvanced]=useState(false);
+  const [region,setRegion]=useState<RunningHubRegionMode>(getRunningHubRegionMode);
+  const rows=parseAccountImport(importText,latest.current),valid=rows.filter(r=>!r.issue&&!r.duplicate);
+  const update=(next:ApiKeyEntry[])=>{latest.current=next;onUpdateApiKeys(next,persistRef.current);};
+  const change=(id:string,fn:(a:ApiKeyEntry)=>ApiKeyEntry)=>update(latest.current.map(a=>a.id===id?fn(a):a));
+  const refresh=async(id:string,enableOnSuccess=false)=>{
+    const entry=latest.current.find(a=>a.id===id);if(!entry?.apiKey.trim())return;
+    const key=entry.apiKey;change(id,a=>({...a,loading:true,error:undefined}));
+    try{const info=await getApiInfo(key);change(id,a=>a.apiKey!==key?a:{...a,loading:false,apiInfo:info,accountInfo:info.account,concurrency:Math.max(1,Number(info.queue.concurrentLimit)||1),enabled:enableOnSuccess?true:a.enabled,error:undefined});}
+    catch(e:any){change(id,a=>a.apiKey!==key?a:{...a,loading:false,enabled:enableOnSuccess?false:a.enabled,error:e.message||'验证失败'});}
+  };
+  const refreshMany=async(ids:string[],enable:boolean|Set<string>=false)=>{
+    setBusy(true);try{for(let i=0;i<ids.length;i+=3)await Promise.all(ids.slice(i,i+3).map(id=>refresh(id,typeof enable==='boolean'?enable:enable.has(id))));await flushLocalSettings();}catch(e:any){setError(e.message);}finally{setBusy(false);}
+  };
+  const saveForm=async(event:React.FormEvent)=>{
+    event.preventDefault();if(!form)return;setError('');const key=form.apiKey.trim(),note=form.note.trim();
+    if(!key||!note){setError('请填写 API Key 和备注 / 邮箱。');return;}
+    if(latest.current.some(a=>a.id!==form.id&&a.apiKey.trim()===key)){setError('这个 API Key 已存在，未重复添加。');return;}
+    if(/\s/.test(key)){setError('API Key 中不能包含空白字符。');return;}
+    const existing=latest.current.find(a=>a.id===form.id),id=existing?.id||crypto.randomUUID(),changed=existing?.apiKey.trim()!==key;
+    if(existing&&changed&&(await listAttemptSummaries()).some(a=>a.accountId===existing.id&&['preparing','submitting','unknown','queued','running','query_failed'].includes(a.status))){setError('该账号有未完成或待确认任务，暂不能替换密钥。请先停用新任务并处理已有记录。');return;}
+    const entry:ApiKeyEntry={...existing,id,apiKey:key,note,enabled:changed?false:existing?.enabled,concurrency:changed?1:existing?.concurrency,apiInfo:changed?null:existing?.apiInfo,accountInfo:changed?null:existing?.accountInfo,error:undefined};
+    update(existing?latest.current.map(a=>a.id===id?entry:a):[...latest.current.filter(a=>a.apiKey.trim()),entry]);
+    setMessage(existing?'账号已保存。':'账号已添加，正在验证；成功后参与调度。');setForm(null);
+    try{await flushLocalSettings();if(changed)await refreshMany([id],true);}catch(e:any){setError(e.message);}
+  };
+  const applyImport=async()=>{
+    const parsed=parseAccountImport(importText,latest.current),result=mergeImportedAccounts(latest.current.filter(a=>a.apiKey.trim()),parsed);
+    if(!result.added.length)return;update(result.accounts);setTool(null);setImportText('');setMessage('已添加 '+result.added.length+' 个账号，正在逐批验证；验证失败项保留并暂停调度。');
+    await refreshMany(result.added.map(a=>a.id),new Set(result.added.filter(a=>parsed.find(row=>row.apiKey===a.apiKey)?.enabled!==false).map(a=>a.id)));
+  };
+  const close=async()=>{try{await flushLocalSettings();setTool(null);setImportText('');setForm(null);setReveal(false);setError('');setMessage('');onClose();}catch(e:any){setError(e.message||'设置尚未保存，请重试。');}};
+  const visible=entries.filter(a=>(a.note+' '+maskAccountKey(a.apiKey)).toLowerCase().includes(query.toLowerCase())&&(filter==='all'||filter==='enabled'&&a.enabled!==false||filter==='disabled'&&a.enabled===false||filter==='error'&&!!a.error));
+  if(!isOpen)return null;
+  return <div className={embedded?"embedded-account":"fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3"}>
+    <section role={embedded?"region":"dialog"} aria-label={embedded?"账号管理":"个人中心"} className={(embedded?"embedded ":"")+"account-manager flex h-[90vh] w-full max-w-[1440px] flex-col overflow-hidden rounded-xl bg-white text-slate-800 shadow-xl dark:bg-[#161920] dark:text-slate-100"}>
+      <header className="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-700"><div><h2 className="font-semibold">账号管理</h2><p className="mt-1 text-xs text-slate-500">{entries.length} 个账号 · {entries.filter(a=>a.enabled!==false).length} 个启用 · 可用并发上限 {entries.filter(a=>a.enabled!==false).reduce((sum,a)=>sum+(a.concurrency||1),0)}（以平台实时队列为准）</p></div><button hidden={embedded} aria-label="关闭个人中心" title="关闭" onClick={()=>void close()}><X size={18}/></button></header>
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-3 dark:border-slate-700">
+        <button className="account-primary" onClick={()=>{setForm({apiKey:'',note:''});setTool(null);setReveal(false);}}><Plus size={15}/>新增账号</button>
+        <button className="account-button" onClick={()=>{setTool(tool==='import'?null:'import');setForm(null);}}><Upload size={15}/>批量导入</button>
+        <button className="account-button" onClick={()=>{setTool(tool==='export'?null:'export');setForm(null);}}><Download size={15}/>导出账号</button>
+        <button className="account-button" disabled={busy} onClick={()=>void refreshMany(entries.map(a=>a.id))}><RefreshCw size={15} className={busy?'animate-spin':''}/>刷新余额</button>
+        <label className="ml-auto flex items-center gap-2 rounded border border-slate-400 px-2"><Search size={14}/><input aria-label="搜索账号" placeholder="搜索备注、邮箱或密钥尾号" value={query} onChange={e=>setQuery(e.target.value)} className="w-56 bg-transparent py-1.5 text-sm outline-none"/></label>
+        <select aria-label="筛选账号" value={filter} onChange={e=>setFilter(e.target.value)} className="rounded border border-slate-400 bg-transparent p-1.5 text-sm"><option value="all">全部账号</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="error">异常账号</option></select>
+        <button className="account-button" onClick={()=>setAdvanced(!advanced)}>站点与保存设置</button>
       </div>
-
-      {entry.error ? (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
-          {entry.error}
-        </div>
-      ) : account ? (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-4">
-          {[
-            ['RH 币', account.remainCoins, 'text-amber-600 dark:text-amber-400'],
-            [`钱包余额${account.currency ? ` (${account.currency})` : ''}`, account.remainMoney || '-', 'text-emerald-600 dark:text-emerald-400'],
-            ['API 类型', formatApiType(account.apiType || queue?.apiKeyType), 'text-slate-800 dark:text-slate-100'],
-            ['运行 / 排队', queue ? `${queue.runningCount} / ${queue.queuedCount}` : account.currentTaskCounts, 'text-slate-800 dark:text-slate-100'],
-          ].map(([label, value, color]) => (
-            <div key={label} className="min-w-0 rounded-lg border border-slate-200 bg-white p-2.5 dark:border-slate-800 dark:bg-[#161920]">
-              <div className="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</div>
-              <div className={`mt-1.5 truncate text-base font-bold leading-tight tracking-tight ${color}`} title={String(value)}>
-                {value}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-5 text-center dark:border-slate-800 dark:bg-[#161920]">
-          <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
-            {entry.apiKey.trim() ? '点击“获取信息”拉取余额和并发上限。' : '这条 API 还未填写。'}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-};
-
-const SettingsModal: React.FC<SettingsModalProps> = ({
-  isOpen,
-  onClose,
-  apiKeys,
-  enterpriseApi,
-  onUpdateApiKeys,
-  onUpdateEnterpriseApi,
-}) => {
-  const [loadingAny, setLoadingAny] = useState(false);
-  const [saveApiKeyEnabled, setSaveApiKeyEnabled] = useState(() => localStorage.getItem(STORAGE_KEY_SAVE_API) === 'true');
-  const [regionMode, setRegionMode] = useState<RunningHubRegionMode>(() => getRunningHubRegionMode());
-
-  const entries = ensureApiEntries(apiKeys);
-  const enterpriseEntry = ensureEntry(enterpriseApi);
-  const latestSettings = useRef({ entries, enterpriseEntry, saveApiKeyEnabled });
-  latestSettings.current = { entries, enterpriseEntry, saveApiKeyEnabled };
-  const configuredEntries = entries.filter(entry => entry.apiKey.trim());
-  const totalConsumerConcurrency = configuredEntries.reduce((sum, entry) => sum + (entry.concurrency || 1), 0);
-  const enterpriseConcurrency = enterpriseEntry.apiKey.trim() ? enterpriseEntry.concurrency || 1 : 0;
-
-  const handleRegionModeChange = (mode: RunningHubRegionMode) => {
-    setRegionMode(mode);
-    setRunningHubRegionMode(mode);
-    localStorage.removeItem('rh_official_apps_cache');
-    localStorage.removeItem('rh_official_apps_cache_cn');
-    localStorage.removeItem('rh_official_apps_cache_global');
-  };
-
-  const updateEntries = (updater: (currentEntries: ApiKeyEntry[]) => ApiKeyEntry[], saveToStorage = latestSettings.current.saveApiKeyEnabled) => {
-    const updated = ensureApiEntries(updater(latestSettings.current.entries));
-    latestSettings.current.entries = updated;
-    onUpdateApiKeys(updated, saveToStorage);
-  };
-
-  const updateEntry = (
-    entryId: string,
-    updater: (entry: ApiKeyEntry) => ApiKeyEntry,
-    saveToStorage = latestSettings.current.saveApiKeyEnabled,
-  ) => {
-    updateEntries(
-      currentEntries => currentEntries.map(entry => entry.id === entryId ? ensureEntry(updater(ensureEntry(entry))) : entry),
-      saveToStorage,
-    );
-  };
-
-  const handleSaveApiKeyToggle = (enabled: boolean) => {
-    setSaveApiKeyEnabled(enabled);
-    localStorage.setItem(STORAGE_KEY_SAVE_API, enabled.toString());
-    if (!enabled) {
-      localStorage.removeItem('rh_api_keys_v2');
-      localStorage.removeItem('rh_enterprise_api_v1');
-      onUpdateApiKeys([createEmptyApiKeyEntry()], false);
-      onUpdateEnterpriseApi(createEmptyApiKeyEntry(), false);
-    }
-  };
-
-  const handleRefreshEntry = async (entryId: string) => {
-    const targetEntry = entries.find(entry => entry.id === entryId);
-    if (!targetEntry?.apiKey.trim()) return;
-
-    setLoadingAny(true);
-    updateEntry(entryId, entry => ({ ...entry, loading: true, error: undefined }));
-    try {
-      const apiInfo = await getApiInfo(targetEntry.apiKey);
-      updateEntry(entryId, entry => entry.apiKey !== targetEntry.apiKey ? entry : ({
-        ...entry,
-        concurrency: getConcurrencyFromInfo(apiInfo),
-        accountInfo: apiInfo.account,
-        apiInfo,
-        loading: false,
-        error: undefined,
-      }));
-    } catch (error: any) {
-      updateEntry(entryId, entry => entry.apiKey !== targetEntry.apiKey ? entry : ({
-        ...entry,
-        accountInfo: null,
-        apiInfo: null,
-        loading: false,
-        error: error?.message || '获取 API 信息失败',
-      }));
-    } finally {
-      setLoadingAny(false);
-    }
-  };
-
-  const handleRefreshEnterprise = async () => {
-    if (!enterpriseEntry.apiKey.trim()) return;
-
-    setLoadingAny(true);
-    onUpdateEnterpriseApi({ ...enterpriseEntry, loading: true, error: undefined }, saveApiKeyEnabled);
-    try {
-      const apiInfo = await getApiInfo(enterpriseEntry.apiKey);
-      if (latestSettings.current.enterpriseEntry.apiKey !== enterpriseEntry.apiKey) return;
-      onUpdateEnterpriseApi({
-        ...latestSettings.current.enterpriseEntry,
-        concurrency: getConcurrencyFromInfo(apiInfo),
-        accountInfo: apiInfo.account,
-        apiInfo,
-        loading: false,
-        error: undefined,
-      }, latestSettings.current.saveApiKeyEnabled);
-    } catch (error: any) {
-      if (latestSettings.current.enterpriseEntry.apiKey !== enterpriseEntry.apiKey) return;
-      onUpdateEnterpriseApi({
-        ...latestSettings.current.enterpriseEntry,
-        accountInfo: null,
-        apiInfo: null,
-        loading: false,
-        error: error?.message || '获取企业共享 API 信息失败',
-      }, latestSettings.current.saveApiKeyEnabled);
-    } finally {
-      setLoadingAny(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const filledEnterprise = enterpriseEntry.apiKey.trim();
-    if (filledEnterprise.length > 12 && !enterpriseEntry.apiInfo && !enterpriseEntry.loading) {
-      const timer = window.setTimeout(() => void handleRefreshEnterprise(), 500);
-      return () => window.clearTimeout(timer);
-    }
-  }, [isOpen, enterpriseEntry.apiKey]);
-
-  if (!isOpen) {
-    return null;
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="flex h-[88vh] w-[1320px] max-w-[95vw] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-[#1a1d24]"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800/50">
-          <h3 className="flex items-center gap-2 text-xl font-bold text-slate-800 dark:text-white">
-            <User className="h-6 w-6 text-brand-500" />
-            个人中心
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full bg-slate-100 p-1.5 text-slate-400 transition-colors hover:text-slate-600 dark:bg-slate-800 dark:hover:text-slate-300"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <div className="grid h-full grid-cols-12 items-start gap-4">
-            <div className="col-span-12 min-h-0 lg:col-span-5 lg:h-full">
-              <div className="flex h-full min-h-[560px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800/50 dark:bg-slate-900/30">
-                <div className="mb-3 flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2 text-slate-800 dark:text-white">
-                      <Key className="h-5 w-5 text-brand-500" />
-                      <h4 className="text-base font-bold">API 设置</h4>
-                    </div>
-                    <p className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                      消费级 API 用于 AI 应用和多任务；企业共享 API 用于标准模型 API。并发数会从 RunningHub 自动获取。
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => updateEntries(currentEntries => [...currentEntries, createEmptyApiKeyEntry()])}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-brand-600"
-                  >
-                    <Plus className="h-4 w-4" />
-                    新增消费 API
-                  </button>
-                </div>
-
-                <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-[#0F1115]">
-                  <div className="mb-2 flex items-center gap-2">
-                    <Globe2 className="h-4 w-4 text-brand-500" />
-                    <span className="text-sm font-semibold text-slate-800 dark:text-white">RunningHub 站点</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
-                    {([
-                      ['auto', '自动识别'],
-                      ['cn', '国内站'],
-                      ['global', '海外站'],
-                    ] as const).map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        onClick={() => handleRegionModeChange(value)}
-                        className={`rounded-md px-2 py-1.5 text-xs font-medium transition ${regionMode === value
-                          ? 'bg-white text-brand-600 shadow-sm dark:bg-slate-700 dark:text-brand-300'
-                          : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-slate-400 dark:text-slate-500">
-                    {regionMode === 'auto'
-                      ? '会通过只读队列接口判断 API Key 所属站点；粘贴 .cn / .ai 应用链接时也会自动识别。'
-                      : `已强制所有请求使用${regionMode === 'cn' ? '国内站' : '海外站'}，可随时切回自动。`}
-                  </p>
-                </div>
-
-                <div className="mb-3 flex gap-2">
-                  <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-dashed border-brand-200 bg-brand-50/60 px-3 py-2 dark:border-brand-900/40 dark:bg-brand-900/10">
-                    <div className="truncate text-xs font-semibold text-slate-700 dark:text-slate-200">AI 应用槽位</div>
-                    <div className="text-sm font-bold text-brand-600 dark:text-brand-300">{totalConsumerConcurrency}</div>
-                  </div>
-                  <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-dashed border-emerald-200 bg-emerald-50/60 px-3 py-2 dark:border-emerald-900/40 dark:bg-emerald-900/10">
-                    <div className="truncate text-xs font-semibold text-slate-700 dark:text-slate-200">标准模型槽位</div>
-                    <div className="text-sm font-bold text-emerald-600 dark:text-emerald-300">{enterpriseConcurrency}</div>
-                  </div>
-                </div>
-
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-                  <div className="rounded-xl border border-emerald-200 bg-white p-3 shadow-sm dark:border-emerald-900/50 dark:bg-[#0F1115]">
-                    <div className="mb-2.5 flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-slate-800 dark:text-white">企业共享 API</div>
-                        <div className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-                          {enterpriseEntry.apiKey.trim()
-                            ? `${maskApiKey(enterpriseEntry.apiKey)} · 并发 ${enterpriseEntry.concurrency || 1}`
-                            : '用于标准模型 API 模块'}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleRefreshEnterprise()}
-                        disabled={loadingAny || enterpriseEntry.loading || !enterpriseEntry.apiKey.trim()}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-900/20 dark:text-emerald-300"
-                      >
-                        {enterpriseEntry.loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                        获取信息
-                      </button>
-                    </div>
-                    <div className="relative">
-                      <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
-                        <Key className="h-4 w-4" />
-                      </div>
-                      <input
-                        type="password"
-                        value={enterpriseEntry.apiKey}
-                        onChange={(event) => onUpdateEnterpriseApi({
-                          ...enterpriseEntry,
-                          apiKey: event.target.value,
-                          loading: false,
-                          accountInfo: event.target.value.trim() === enterpriseEntry.apiKey.trim() ? enterpriseEntry.accountInfo : null,
-                          apiInfo: event.target.value.trim() === enterpriseEntry.apiKey.trim() ? enterpriseEntry.apiInfo : null,
-                          error: undefined,
-                        }, saveApiKeyEnabled)}
-                        className="block w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 dark:border-slate-700 dark:bg-[#0F1115] dark:text-slate-100"
-                        placeholder="填写企业共享 API KEY"
-                      />
-                    </div>
-                    {enterpriseEntry.error && (
-                      <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
-                        {enterpriseEntry.error}
-                      </div>
-                    )}
-                  </div>
-
-                  {entries.map((entry, index) => (
-                    <div key={entry.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-[#0F1115]">
-                      <div className="mb-2.5 flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-semibold text-slate-800 dark:text-white">消费级 API {index + 1}</div>
-                          <div className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-                            {entry.apiKey.trim()
-                              ? `${maskApiKey(entry.apiKey)} · 并发 ${entry.concurrency || 1}`
-                              : '用于 AI 应用、多任务调度'}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void handleRefreshEntry(entry.id)}
-                            disabled={loadingAny || entry.loading || !entry.apiKey.trim()}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-200 disabled:opacity-50 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
-                          >
-                            {entry.loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                            获取信息
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => updateEntries(currentEntries => (
-                              currentEntries.length <= 1
-                                ? [{ ...createEmptyApiKeyEntry(), id: currentEntries[0]?.id || crypto.randomUUID() }]
-                                : currentEntries.filter(current => current.id !== entry.id)
-                            ))}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/20 dark:text-red-300"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            删除
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="relative">
-                        <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
-                          <Key className="h-4 w-4" />
-                        </div>
-                        <input
-                          type="password"
-                          value={entry.apiKey}
-                          onChange={(event) => updateEntry(entry.id, current => ({
-                            ...current,
-                            apiKey: event.target.value,
-                            loading: false,
-                            accountInfo: event.target.value.trim() === current.apiKey.trim() ? current.accountInfo : null,
-                            apiInfo: event.target.value.trim() === current.apiKey.trim() ? current.apiInfo : null,
-                            error: undefined,
-                          }))}
-                          className="block w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-800 outline-none transition focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 dark:border-slate-700 dark:bg-[#0F1115] dark:text-slate-100"
-                          placeholder="填写消费级 API KEY"
-                        />
-                      </div>
-                      <p className="mt-1.5 text-xs text-slate-400 dark:text-slate-500">
-                        并发数由 RunningHub 队列接口自动获取。
-                      </p>
-                      {entry.error && (
-                        <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
-                          {entry.error}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-              </div>
-            </div>
-
-            <div className="col-span-12 lg:col-span-7">
-              <div className="h-full rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800/50 dark:bg-[#161920]">
-                <div className="mb-3 flex items-center gap-2">
-                  <Coins className="h-5 w-5 text-amber-500" />
-                  <h4 className="text-base font-bold text-slate-800 dark:text-white">账户概览</h4>
-                </div>
-
-                <div className="space-y-3">
-                  <AccountCards entry={enterpriseEntry} title="企业共享 API" />
-                  {entries.map((entry, index) => (
-                    <AccountCards key={`account-${entry.id}`} entry={entry} title={`消费级 API ${index + 1}`} />
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between gap-4 border-t border-slate-100 px-6 py-4 dark:border-slate-800/50">
-          <label className="flex cursor-pointer items-center gap-2 select-none">
-            <div
-              className={`flex h-5 w-5 items-center justify-center rounded border transition-colors ${
-                saveApiKeyEnabled
-                  ? 'border-brand-600 bg-brand-600'
-                  : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-[#0F1115]'
-              }`}
-              onClick={() => handleSaveApiKeyToggle(!saveApiKeyEnabled)}
-            >
-              {saveApiKeyEnabled && <Check className="h-3.5 w-3.5 text-white" />}
-            </div>
-            <span className="text-sm text-slate-600 dark:text-slate-400">本地保存 API Key</span>
-            <span className="hidden text-xs text-slate-400 dark:text-slate-500 sm:inline">关闭后清空本地已保存 API</span>
-          </label>
-          <button
-            onClick={onClose}
-            className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-8 py-2.5 font-semibold text-white shadow-lg shadow-brand-500/20 transition-all hover:bg-brand-700"
-          >
-            <Save className="h-4 w-4" />
-            保存并关闭
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default SettingsModal;
+      {advanced&&<div className="flex flex-wrap items-center gap-4 border-b border-slate-300 p-3 text-sm dark:border-slate-700"><label>站点 <select aria-label="RunningHub 站点" value={region} onChange={e=>{const mode=e.target.value as RunningHubRegionMode;setRegion(mode);setRunningHubRegionMode(mode);}} className="rounded border border-slate-400 bg-transparent p-1"><option value="global">国际站</option><option value="cn">国内站</option><option value="auto">自动识别</option></select></label><label className="flex items-center gap-2"><input type="checkbox" checked={persist} onChange={e=>{const enabled=e.target.checked;persistRef.current=enabled;setPersist(enabled);settingsStorage.setItem('rh_save_api_enabled',String(enabled));onUpdateApiKeys(latest.current,enabled);onUpdateEnterpriseApi(enterpriseApi,enabled);}}/>本地保存账号</label>{!persist&&<span className="text-amber-600">已关闭持久保存，重开后不保留账号。</span>}</div>}
+      {form&&<form onSubmit={event=>void saveForm(event).catch(e=>setError(e.message))} className="account-entry-form border-b border-brand-500 bg-brand-50/40 p-3 dark:bg-brand-900/10">
+        <label>备注 / 邮箱<input autoFocus aria-label="新增或编辑账号备注" value={form.note} onChange={e=>setForm({...form,note:e.target.value})} placeholder="方便识别的邮箱或名称"/></label>
+        <label className="min-w-0 flex-1">API Key<div className="flex gap-1"><input aria-label="新增或编辑 API Key" type={reveal?'text':'password'} value={form.apiKey} onChange={e=>setForm({...form,apiKey:e.target.value})} autoComplete="off" placeholder="粘贴国际站个人 API Key"/><button type="button" aria-label={reveal?'隐藏 API Key':'显示 API Key'} onClick={()=>setReveal(!reveal)}>{reveal?<EyeOff size={16}/>:<Eye size={16}/>}</button></div></label>
+        <button type="submit" disabled={busy} className="account-primary">{form.id?'保存修改':'添加并验证'}</button><button type="button" onClick={()=>setForm(null)}>取消</button>
+      </form>}
+      {tool==='import'&&<div className="account-transfer border-b border-slate-300 p-3 dark:border-slate-700"><div><h3 className="mb-2 font-medium">批量导入预览</h3><p className="mb-2 text-xs text-slate-500">一行 API、一行备注 / 邮箱，空行分组；也支持导出的 JSON。只追加新账号，不改已有账号。</p><textarea aria-label="批量导入账号文本" value={importText} onChange={e=>setImportText(e.target.value)} placeholder={'API_KEY_A\n邮箱或备注 A\n\nAPI_KEY_B\n邮箱或备注 B'} className="h-36 w-full rounded border border-slate-400 bg-transparent p-2 font-mono text-xs"/></div><div className="min-w-0"><div className="mb-2 text-sm">{valid.length} 条可导入 · {rows.filter(r=>r.duplicate).length} 条重复 · {rows.filter(r=>r.issue).length} 条需修正</div><div className="h-28 overflow-auto text-xs">{rows.map((r,i)=><p key={i} className={r.issue?'text-red-500':r.duplicate?'text-slate-500':''}>第 {r.line} 行 · {r.note||'未填写备注'} · {maskAccountKey(r.apiKey)} · {r.issue|| (r.duplicate?'已存在，跳过':'可导入')}</p>)}</div><button disabled={busy||!valid.length} className="account-primary mt-2" onClick={()=>void applyImport().catch(e=>setError(e.message))}>导入 {valid.length} 个有效新账号</button></div></div>}
+      {tool==='export'&&<div className="border-b border-slate-300 p-3 dark:border-slate-700"><div className="mb-2 flex flex-wrap items-center gap-3"><strong className="text-sm">导出 {entries.length} 个账号</strong><select aria-label="账号导出格式" value={exportFormat} onChange={e=>setExportFormat(e.target.value as 'text'|'json')} className="rounded border bg-transparent p-1 text-xs"><option value="text">API 与备注分行文本</option><option value="json">JSON</option></select><button className="account-button" onClick={()=>void navigator.clipboard.writeText(exportAccounts(entries,exportFormat)).then(()=>setMessage('账号文本已复制。')).catch(()=>setError('剪贴板不可用，请选中文本后手动复制。'))}><Copy size={14}/>复制导出文本</button><span className="text-xs text-amber-600 dark:text-amber-400">包含真实密钥，请自行妥善保管；不会写入运行日志。</span></div><textarea aria-label="账号导出文本" readOnly value={exportAccounts(entries,exportFormat)} className="h-32 w-full rounded border border-slate-400 bg-transparent p-2 font-mono text-xs"/></div>}
+      {error&&<p role="alert" className="px-4 py-2 text-sm text-red-500">{error}</p>}{message&&<p role="status" className="px-4 py-2 text-sm text-brand-600">{message}</p>}
+      <div className="min-h-0 flex-1 overflow-auto"><table className="account-table"><thead><tr><th>#</th><th>备注 / 邮箱</th><th>密钥</th><th>剩余 RH</th><th>运行 / 排队</th><th>并发</th><th>参与调度</th><th>操作</th></tr></thead><tbody>{visible.map((entry,index)=>{const account=entry.apiInfo?.account||entry.accountInfo,queue=entry.apiInfo?.queue;return <React.Fragment key={entry.id}><tr><td>{index+1}</td><td><button className="max-w-64 truncate text-left font-medium" title={entry.note} onClick={()=>setExpanded(expanded===entry.id?null:entry.id)}>{entry.note||'未备注'}</button>{entry.error&&<p className="max-w-64 truncate text-xs text-red-500" title={entry.error}>{entry.error}</p>}</td><td className="font-mono text-xs text-slate-500">{maskAccountKey(entry.apiKey)}</td><td className="key-data">{account?.remainCoins??'未查询'}</td><td>{queue?queue.runningCount+' / '+queue.queuedCount:account?.currentTaskCounts??'—'}</td><td>{entry.concurrency||1}</td><td><label className="flex items-center gap-1"><input aria-label={'账号 '+(index+1)+' 参与自动调度'} type="checkbox" checked={entry.enabled!==false} onChange={e=>change(entry.id,a=>({...a,enabled:e.target.checked}))}/><span className="text-xs">{entry.loading?'验证中':entry.enabled===false?'已停用':'已启用'}</span></label></td><td><div className="flex items-center gap-1"><button title="编辑账号" aria-label={'编辑账号 '+entry.note} onClick={()=>{setForm({id:entry.id,apiKey:entry.apiKey,note:entry.note||''});setTool(null);setReveal(false);}}><Pencil size={15}/></button><button title="刷新余额" aria-label={'刷新账号 '+entry.note} disabled={entry.loading} onClick={()=>void refresh(entry.id)}><RefreshCw size={15} className={entry.loading?'animate-spin':''}/></button><button title="删除账号" aria-label={'删除账号 '+entry.note} onClick={()=>void(async()=>{if((await listAttemptSummaries()).some(a=>a.accountId===entry.id&&['preparing','submitting','unknown','queued','running','query_failed'].includes(a.status))){setError('该账号有未完成或待确认任务，请先停用，处理完成后再删除。');return;}if(window.confirm('删除账号配置“'+(entry.note||'未备注')+'”？生成记录保留；有未完成任务时请先停用账号。'))update(latest.current.filter(a=>a.id!==entry.id));})().catch(e=>setError(e.message))}><Trash2 size={15}/></button></div></td></tr>{expanded===entry.id&&<tr><td colSpan={8} className="text-xs text-slate-500">账号：{entry.note} · 站点：{entry.apiInfo?.region==='cn'?'国内站':entry.apiInfo?.region==='global'?'国际站':'未查询'} · 钱包：{account?.remainMoney??'未返回'} · 类型：{account?.apiType||'未返回'}{entry.error&&<p className="mt-1 text-red-500">{entry.error}</p>}</td></tr>}</React.Fragment>;})}</tbody></table>{!visible.length&&<p className="p-10 text-center text-sm text-slate-500">{entries.length?'没有符合条件的账号':'还没有账号。使用顶部新增或批量导入。'}</p>}</div>
+      <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-300 px-4 py-3 text-xs dark:border-slate-700"><span className="min-w-0 truncate" title={localSession()?.rootPath}>保存位置：{localSession()?.rootPath||'当前浏览器'} · {persist?'修改自动保存，密钥受 Windows 当前用户保护':'仅当前窗口保留账号'}</span><button className="account-primary" onClick={()=>void (embedded?flushLocalSettings().then(()=>setMessage("账号设置已保存")).catch(e=>setError(e.message)):close())}>{embedded?"保存账号设置":"保存并关闭"}</button></footer>
+    </section>
+  </div>;
+}

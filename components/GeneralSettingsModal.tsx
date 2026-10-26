@@ -1,3 +1,4 @@
+import { settingsStorage } from '../services/localPersistence';
 import React, { useEffect, useState } from 'react';
 import { FolderOpen, Loader2, Save, X } from 'lucide-react';
 import { AutoSaveConfig, HomeDefaultTab } from '../types';
@@ -25,12 +26,11 @@ interface GeneralSettingsModalProps {
 
 const STARTUP_VIEW_OPTIONS: { value: StartupView; label: string; description: string }[] = [
   { value: 'home', label: '首页', description: '启动后先看应用推荐和收藏入口' },
-  { value: 'workspace', label: '标准模型 API', description: '启动后直接进入标准模型 API 工作区' },
   { value: 'multitask', label: '多任务模式', description: '启动后直接进入 AI 应用多任务调度' },
 ];
 
 const HOME_TAB_OPTIONS: { value: HomeDefaultTab; label: string; description: string }[] = [
-  { value: 'support', label: '交流与支持', description: '默认启动后先展示交流与支持页面' },
+  { value: 'favorites', label: '我的收藏', description: '进入首页后默认展示自己的常用应用' },
   { value: 'official', label: '官方应用商城', description: '进入首页后默认展示官方商城' },
 ];
 
@@ -48,13 +48,13 @@ const GeneralSettingsModal: React.FC<GeneralSettingsModalProps> = ({
   const [permissionExpired, setPermissionExpired] = useState(false);
   const [isSelectingDirectory, setIsSelectingDirectory] = useState(false);
   const [refreshStoreOnStartup, setRefreshStoreOnStartup] = useState(() => {
-    return localStorage.getItem('rh_refresh_store_startup') !== 'false';
+    return settingsStorage.getItem('rh_refresh_store_startup') !== 'false';
   });
 
   const handleToggleRefreshStore = () => {
     const nextVal = !refreshStoreOnStartup;
     setRefreshStoreOnStartup(nextVal);
-    localStorage.setItem('rh_refresh_store_startup', nextVal.toString());
+    settingsStorage.setItem('rh_refresh_store_startup', nextVal.toString());
   };
 
   useEffect(() => {

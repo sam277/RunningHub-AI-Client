@@ -1,9 +1,10 @@
+import { settingsStorage } from './services/localPersistence';
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
-import { Home, Briefcase, Settings, User, Layers, Languages } from 'lucide-react';
+import { Home, Settings, User, Layers, Languages } from 'lucide-react';
 import type { StepRunningRef } from './components/StepRunning';
 import type { MultiTaskAppRequest } from './components/MultiTaskView';
 import SettingsModal from './components/SettingsModal';
-import Footer from './components/Footer';
+import LocalDataPanel from './components/LocalDataPanel';
 import TermsModal from './components/TermsModal';
 import { NodeInfo, TaskOutput, WebAppInfo, ApiKeyEntry, AutoSaveConfig, Favorite, HistoryItem, RecentApp, FailedTaskInfo, InstanceType, HomeDefaultTab, StandardModelConfig } from './types';
 import { saveMultipleFiles, getDirectoryName, initAutoSave, checkDirectoryAccess, getCurrentDirectoryPath } from './services/autoSaveService';
@@ -16,7 +17,7 @@ const StepEditor = lazy(() => import('./components/StepEditor'));
 const StepRunning = lazy(() => import('./components/StepRunning'));
 const WorkspacePanel = lazy(() => import('./components/WorkspacePanel'));
 const MultiTaskView = lazy(() => import('./components/MultiTaskView'));
-const ToolsView = lazy(() => import('./components/ToolsView'));
+const UnifiedSettings = lazy(() => import('./components/UnifiedSettings'));
 
 const STORAGE_KEY_API_KEYS = 'rh_api_keys_v2';
 const STORAGE_KEY_ENTERPRISE_API = 'rh_enterprise_api_v1';
@@ -47,6 +48,8 @@ const normalizeApiKeyEntry = (entry?: Partial<ApiKeyEntry> | null): ApiKeyEntry 
   return {
     id: entry?.id || crypto.randomUUID(),
     apiKey: typeof entry?.apiKey === 'string' ? entry.apiKey : '',
+    note: typeof entry?.note === 'string' ? entry.note : '',
+    enabled: entry?.enabled !== false,
     concurrency: Number.isFinite(normalizedConcurrency) && normalizedConcurrency > 0
       ? Math.floor(normalizedConcurrency)
       : 1,
@@ -67,7 +70,7 @@ const normalizeApiKeys = (entries?: Partial<ApiKeyEntry>[] | null): ApiKeyEntry[
 };
 
 const normalizeStartupView = (value?: string | null): StartupView => {
-  if (value === 'workspace' || value === 'multitask') {
+  if (value === 'multitask') {
     return value;
   }
 
@@ -75,11 +78,11 @@ const normalizeStartupView = (value?: string | null): StartupView => {
 };
 
 const normalizeHomeDefaultTab = (value?: string | null): HomeDefaultTab => {
-  if (value === 'official' || value === 'support') {
+  if (value === 'official' || value === 'favorites') {
     return value;
   }
 
-  return 'support';
+  return 'favorites';
 };
 
 const viewLoadingFallback = (
@@ -89,25 +92,25 @@ const viewLoadingFallback = (
 );
 
 function App() {
-  const { language, toggleLanguage, text } = useLanguage();
+  const { text } = useLanguage();
   // Global View State
   const [startupView, setStartupView] = useState<StartupView>(() => {
     try {
-      return normalizeStartupView(localStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
+      return normalizeStartupView(settingsStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
     } catch {
       return 'home';
     }
   });
   const [homeDefaultTab, setHomeDefaultTab] = useState<HomeDefaultTab>(() => {
     try {
-      return normalizeHomeDefaultTab(localStorage.getItem(STORAGE_KEY_HOME_DEFAULT_TAB));
+      return normalizeHomeDefaultTab(settingsStorage.getItem(STORAGE_KEY_HOME_DEFAULT_TAB));
     } catch {
-      return 'support';
+      return 'favorites';
     }
   });
   const [currentView, setCurrentView] = useState<AppView>(() => {
     try {
-      return normalizeStartupView(localStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
+      return normalizeStartupView(settingsStorage.getItem(STORAGE_KEY_STARTUP_VIEW));
     } catch {
       return 'home';
     }
@@ -121,14 +124,14 @@ function App() {
   const [webappId, setWebappId] = useState('');
   const [apiKeys, setApiKeys] = useState<ApiKeyEntry[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_API_KEYS);
+      const saved = settingsStorage.getItem(STORAGE_KEY_API_KEYS);
       const parsed = saved ? JSON.parse(saved) : [];
-      return normalizeApiKeys(parsed);
+      return normalizeApiKeys(parsed).map(entry => ({ ...entry, loading: false, error: undefined }));
     } catch { return [createEmptyApiKeyEntry()]; }
   });
   const [enterpriseApi, setEnterpriseApi] = useState<ApiKeyEntry>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_ENTERPRISE_API);
+      const saved = settingsStorage.getItem(STORAGE_KEY_ENTERPRISE_API);
       return normalizeApiKeyEntry(saved ? JSON.parse(saved) : null);
     } catch {
       return createEmptyApiKeyEntry();
@@ -166,8 +169,8 @@ function App() {
 
     setApiKeys(normalizedKeys);
 
-    if (localStorage.getItem(STORAGE_KEY_API_KEYS)) {
-      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys));
+    if (settingsStorage.getItem(STORAGE_KEY_API_KEYS)) {
+      settingsStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
     }
   }, []);
 
@@ -181,7 +184,7 @@ function App() {
   // Recent Apps
   const [recentApps, setRecentApps] = useState<RecentApp[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_RECENT);
+      const saved = settingsStorage.getItem(STORAGE_KEY_RECENT);
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
@@ -192,7 +195,7 @@ function App() {
   // AutoSave Config
   const [autoSaveConfig, setAutoSaveConfig] = useState<AutoSaveConfig>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_AUTOSAVE);
+      const saved = settingsStorage.getItem(STORAGE_KEY_AUTOSAVE);
       if (saved) {
         return normalizeAutoSaveConfig(JSON.parse(saved));
         // 只有当目录名存在时才启用自动保存
@@ -206,13 +209,15 @@ function App() {
   // Favorites
   const [favorites, setFavorites] = useState<Favorite[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_FAVORITES);
+      const saved = settingsStorage.getItem(STORAGE_KEY_FAVORITES);
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
 
   // Settings
-  const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab,setSettingsTab]=useState<'accounts'|'storage'|'run'|'interface'>('accounts');
+  const openSettings=(tab:'accounts'|'storage'|'run'|'interface'='accounts')=>{setSettingsTab(tab);setCurrentView('tools');};
+  useEffect(()=>{const show=()=>openSettings('storage');window.addEventListener('rh-open-data-settings',show);return()=>window.removeEventListener('rh-open-data-settings',show);},[]);
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [termsMode, setTermsMode] = useState<'first-time' | 'about'>('first-time');
 
@@ -220,14 +225,14 @@ function App() {
   const persistAutoSaveConfig = (config: AutoSaveConfig) => {
     const normalized = normalizeAutoSaveConfig(config);
     setAutoSaveConfig(normalized);
-    localStorage.setItem(STORAGE_KEY_AUTOSAVE, JSON.stringify(normalized));
+    settingsStorage.setItem(STORAGE_KEY_AUTOSAVE, JSON.stringify(normalized));
   };
 
   useEffect(() => {
     // Force Dark Mode by default
     document.documentElement.classList.add('dark');
 
-    const agreed = localStorage.getItem('rh_terms_agreed');
+    const agreed = settingsStorage.getItem('rh_terms_agreed');
     if (!agreed) {
       setTermsMode('first-time');
       setShowTermsModal(true);
@@ -280,7 +285,7 @@ function App() {
       const updated = [newApp, ...filtered].slice(0, 11); // Keep 11 to show 10 after filter/slice or just slice 10
       // actually slice 10 is fine
       const final = updated.slice(0, 10);
-      localStorage.setItem(STORAGE_KEY_RECENT, JSON.stringify(final));
+      settingsStorage.setItem(STORAGE_KEY_RECENT, JSON.stringify(final));
       return final;
     });
   };
@@ -358,17 +363,17 @@ function App() {
 
   const handleUpdateFavorites = (updatedFavs: Favorite[]) => {
     setFavorites(updatedFavs);
-    localStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(updatedFavs));
+    settingsStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(updatedFavs));
   };
 
   const handleUpdateApiKeys = (newKeys: ApiKeyEntry[], saveToStorage: boolean = true) => {
     const normalizedKeys = normalizeApiKeys(newKeys);
     setApiKeys(normalizedKeys);
     if (saveToStorage) {
-      localStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys));
+      settingsStorage.setItem(STORAGE_KEY_API_KEYS, JSON.stringify(normalizedKeys.map(({ loading, error, ...persisted }) => persisted)));
     } else {
       // 如果不保存，则清除 localStorage 中已保存的 API Keys
-      localStorage.removeItem(STORAGE_KEY_API_KEYS);
+      settingsStorage.removeItem(STORAGE_KEY_API_KEYS);
     }
   };
 
@@ -376,9 +381,9 @@ function App() {
     const normalizedKey = normalizeApiKeyEntry(newKey);
     setEnterpriseApi(normalizedKey);
     if (saveToStorage) {
-      localStorage.setItem(STORAGE_KEY_ENTERPRISE_API, JSON.stringify(normalizedKey));
+      settingsStorage.setItem(STORAGE_KEY_ENTERPRISE_API, JSON.stringify(normalizedKey));
     } else {
-      localStorage.removeItem(STORAGE_KEY_ENTERPRISE_API);
+      settingsStorage.removeItem(STORAGE_KEY_ENTERPRISE_API);
     }
   };
 
@@ -388,12 +393,12 @@ function App() {
 
   const handleUpdateStartupView = (view: StartupView) => {
     setStartupView(view);
-    localStorage.setItem(STORAGE_KEY_STARTUP_VIEW, view);
+    settingsStorage.setItem(STORAGE_KEY_STARTUP_VIEW, view);
   };
 
   const handleUpdateHomeDefaultTab = (tab: HomeDefaultTab) => {
     setHomeDefaultTab(tab);
-    localStorage.setItem(STORAGE_KEY_HOME_DEFAULT_TAB, tab);
+    settingsStorage.setItem(STORAGE_KEY_HOME_DEFAULT_TAB, tab);
   };
 
   const handleSwitchView = (view: AppView) => {
@@ -413,7 +418,7 @@ function App() {
       } else {
         newFavs = [...prev, app];
       }
-      localStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(newFavs));
+      settingsStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(newFavs));
       return newFavs;
     });
   };
@@ -445,7 +450,7 @@ function App() {
   };
 
   const handleAgreeTerms = () => {
-    localStorage.setItem('rh_terms_agreed', 'true');
+    settingsStorage.setItem('rh_terms_agreed', 'true');
     setShowTermsModal(false);
   };
 
@@ -457,7 +462,6 @@ function App() {
 
   const tabs: { id: AppView; label: string; icon: React.FC<any> }[] = [
     { id: 'home', label: text('首页', 'Home'), icon: Home },
-    { id: 'workspace', label: text('标准模型 API', 'Model API'), icon: Briefcase },
     { id: 'multitask', label: text('多任务模式', 'Multi-task'), icon: Layers },
     { id: 'tools', label: text('设置', 'Settings'), icon: Settings },
   ];
@@ -465,10 +469,10 @@ function App() {
   return (
     <div className="h-screen flex flex-col text-slate-800 dark:text-slate-100 font-sans selection:bg-brand-100 selection:text-brand-700 dark:selection:bg-brand-900 dark:selection:text-brand-200 transition-colors duration-300 overflow-hidden bg-slate-100 dark:bg-[#0F1115]">
       {/* Header */}
-      <header className="bg-white dark:bg-[#0F1115] border-b border-slate-200 dark:border-slate-800/50 h-14 flex items-center justify-between pr-4 shrink-0 z-20 shadow-sm">
+      <header className="bg-white dark:bg-[#0F1115] border-b border-slate-200 dark:border-slate-800/50 h-12 flex items-center justify-between pr-4 shrink-0 z-20 shadow-sm">
         <div className="flex items-center h-full gap-3">
-          <img src="/r.png" alt="RunningHub" className="h-10 w-auto ml-2" />
-          <span className="text-xl font-bold text-slate-800 dark:text-white tracking-wide">{text('RH客户端( H 版 ) v1.6.7', 'RH Client (H Edition) v1.6.7')}</span>
+          <img src="/r.png" alt="RunningHub" className="h-8 w-auto ml-2" />
+          <span className="text-base font-semibold text-slate-800 dark:text-white tracking-wide">{text('RH个人工作台 v1.6.7', 'RH Personal Workspace v1.6.7')}</span>
           <button
             onClick={handleOpenAbout}
             className="ml-2 px-2 py-0.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-full transition-colors"
@@ -480,17 +484,6 @@ function App() {
         <div className="flex items-center gap-4">
           {/* Navigation Tabs */}
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={toggleLanguage}
-              data-i18n-ignore="true"
-              aria-label={language === 'zh' ? 'Switch to English' : '切换到中文'}
-              title={language === 'zh' ? 'Switch to English' : '切换到中文'}
-              className="mr-1 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-50 hover:text-brand-600 dark:text-slate-400 dark:hover:bg-slate-800/50 dark:hover:text-brand-400"
-            >
-              <Languages className="h-4 w-4" />
-              <span>{language === 'zh' ? 'EN' : '中文'}</span>
-            </button>
             {tabs.map((tab) => {
               const isActive = currentView === tab.id;
               const Icon = tab.icon;
@@ -510,16 +503,7 @@ function App() {
             })}
           </div>
 
-          <div className="w-px h-4 bg-slate-200 dark:bg-slate-700"></div>
 
-          {/* Personal Center */}
-          <button
-            onClick={() => setShowSettings(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-brand-600 dark:hover:text-brand-400 transition-colors text-sm"
-          >
-            <User className="w-4 h-4" />
-            <span>{text('个人中心', 'Account')}</span>
-          </button>
         </div>
       </header>
 
@@ -532,6 +516,8 @@ function App() {
               <HomeView
                 onSelectApp={handleSelectApp}
                 favorites={favorites}
+                apiKeys={apiKeysList}
+                onUpdateFavorites={handleUpdateFavorites}
                 onToggleFavorite={handleToggleFavorite}
                 defaultTab={homeDefaultTab}
                 resetToken={homeViewResetToken}
@@ -541,7 +527,9 @@ function App() {
 
           <div className={`flex-1 overflow-hidden ${currentView === 'tools' ? 'flex' : 'hidden'}`}>
             {currentView === 'tools' && (
-              <ToolsView
+              <UnifiedSettings
+                tab={settingsTab} onTab={setSettingsTab}
+                apiKeys={apiKeys} enterpriseApi={enterpriseApi} onUpdateApiKeys={handleUpdateApiKeys} onUpdateEnterpriseApi={handleUpdateEnterpriseApi}
                 autoSaveConfig={autoSaveConfig}
                 onUpdateAutoSave={handleUpdateAutoSave}
                 startupView={startupView}
@@ -553,7 +541,8 @@ function App() {
           </div>
 
           <div className={`flex-1 overflow-hidden ${currentView === 'multitask' ? 'flex' : 'hidden'}`}>
-            <MultiTaskView 
+            <MultiTaskView
+              onUpdateFavorites={handleUpdateFavorites}
               apiKeys={apiKeys}
               autoSaveConfig={autoSaveConfig}
               recentApps={recentApps}
@@ -572,7 +561,7 @@ function App() {
                     onNext={handleConfigComplete}
                     initialWebappId={webappId}
                     enterpriseApi={enterpriseApi}
-                    onOpenSettings={() => setShowSettings(true)}
+                    onOpenSettings={() => openSettings()}
                     autoSaveConfig={autoSaveConfig}
                     onAutoSaveChange={handleUpdateAutoSave}
                   />
@@ -646,18 +635,9 @@ function App() {
         </div>
       </Suspense>
 
-      <Footer />
+      <LocalDataPanel barOnly onOpen={()=>openSettings('storage')}/>
 
-      <SettingsModal
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        apiKeys={apiKeys}
-        enterpriseApi={enterpriseApi}
-        onUpdateApiKeys={handleUpdateApiKeys}
-        onUpdateEnterpriseApi={handleUpdateEnterpriseApi}
-        autoSaveConfig={autoSaveConfig}
-        onUpdateAutoSave={handleUpdateAutoSave}
-      />
+
 
       {/* Batch Result Modal */}
       {batchResult && (

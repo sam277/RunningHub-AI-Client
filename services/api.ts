@@ -1,3 +1,4 @@
+import { settingsStorage } from './localPersistence';
 import {
   ApiResponse,
   ApiInfo,
@@ -58,12 +59,17 @@ const normalizeTaskStatus = (status: any): TaskRuntimeStatus => {
       return 'SUCCESS';
     case 'FAILED':
       return 'FAILED';
+    case 'CANCEL':
+    case 'CANCELED':
+    case 'CANCELLED':
+      return 'CANCELLED';
     case 'RUNNING':
       return 'RUNNING';
     case 'QUEUED':
     case 'PENDING':
-    default:
       return 'QUEUED';
+    default:
+      throw new Error('平台返回了无法识别的任务状态，未将其当作排队');
   }
 };
 
@@ -100,13 +106,18 @@ const normalizeCover = (cover: any) => ({
 });
 
 const normalizeNodeInfo = (node: any): NodeInfo => {
-  const rawFieldType = String(node?.fieldType || 'STRING').toUpperCase();
+  const rawFieldType = String(node?.fieldType || 'STRING').trim().toUpperCase();
   let fieldType: NodeInfo['fieldType'];
 
   switch (rawFieldType) {
     case 'COMBO':
       fieldType = 'LIST';
       break;
+    case 'INTEGER': fieldType='INT';break;
+    case 'DOUBLE':
+    case 'NUMBER': fieldType='FLOAT';break;
+    case 'TEXT': fieldType='STRING';break;
+    case 'FILE':
     case 'IMAGE':
     case 'AUDIO':
     case 'VIDEO':
@@ -308,7 +319,7 @@ export const fetchWorkflowTemplate = async (
     let key = apiKey || '';
     if (!key) {
       try {
-        const storedStr = localStorage.getItem('rh_api_keys_v2');
+        const storedStr = settingsStorage.getItem('rh_api_keys_v2');
         if (storedStr) {
           const keys = JSON.parse(storedStr);
           if (Array.isArray(keys) && keys.length > 0) {
@@ -331,7 +342,7 @@ export const fetchWorkflowTemplate = async (
   }
 };
 
-export const uploadMediaV2 = async (apiKey: string, file: File): Promise<UploadData> => {
+export const uploadMediaV2 = async (apiKey: string, file: File, signal?:AbortSignal): Promise<UploadData> => {
   const region = await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/openapi/v2/media/upload/binary`;
   const formData = new FormData();
@@ -341,6 +352,7 @@ export const uploadMediaV2 = async (apiKey: string, file: File): Promise<UploadD
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: formData,
+    signal,
   });
 
   const json = await handleResponse<any>(response);
@@ -360,7 +372,7 @@ export const uploadMediaV2 = async (apiKey: string, file: File): Promise<UploadD
   };
 };
 
-const legacyUploadFile = async (apiKey: string, file: File): Promise<UploadData> => {
+const legacyUploadFile = async (apiKey: string, file: File, signal?:AbortSignal): Promise<UploadData> => {
   const region = await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/task/openapi/upload`;
   const formData = new FormData();
@@ -371,6 +383,7 @@ const legacyUploadFile = async (apiKey: string, file: File): Promise<UploadData>
   const response = await fetch(url, {
     method: 'POST',
     body: formData,
+    signal,
   });
 
   const json = await handleResponse<ApiResponse<UploadData>>(response);
@@ -385,13 +398,14 @@ const legacyUploadFile = async (apiKey: string, file: File): Promise<UploadData>
   };
 };
 
-export const uploadFile = async (apiKey: string, file: File): Promise<UploadData> => {
+export const uploadFile = async (apiKey: string, file: File, signal?:AbortSignal): Promise<UploadData> => {
   try {
-    return await uploadMediaV2(apiKey, file);
+    return await uploadMediaV2(apiKey, file, signal);
   } catch (error: any) {
+    if(signal?.aborted)throw error;
     const message = String(error?.message || '');
     if (/HTTP Error: 404|HTTP Error: 405|HTTP Error: 500|Failed to fetch/i.test(message)) {
-      return legacyUploadFile(apiKey, file);
+      return legacyUploadFile(apiKey, file, signal);
     }
     throw error;
   }
@@ -495,8 +509,19 @@ export interface QueryTaskResponse extends ApiResponse<TaskOutput[] | any> {
   promptTips?: PromptTips | string | null;
 }
 
-export const queryTaskResultV2 = async (apiKey: string, taskId: string): Promise<QueryTaskResultV2> => {
-  const region = await resolveRunningHubRegion(apiKey);
+// Cancellation always uses the original account and region of the accepted task.
+export const cancelTask = async (apiKey: string, taskId: string, region: RunningHubRegion) => {
+  const response = await fetch(`${getRunningHubHost(region)}/task/openapi/cancel`, {
+    method: 'POST', headers: buildAuthHeaders(apiKey, {'Content-Type':'application/json'}),
+    body: JSON.stringify({apiKey,taskId}), signal: AbortSignal.timeout(15000),
+  });
+  const json = await handleResponse<ApiResponse<null>>(response);
+  if (!isWrappedApiResponse(json) || json.code !== 0) throw new Error(json?.msg || '平台未接受取消请求');
+};
+
+export const isTaskNotFoundError=(error:unknown)=>['1004','807'].includes(String((error as {code?:unknown})?.code));
+export const queryTaskResultV2 = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResultV2> => {
+  const region = resolvedRegion || await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/openapi/v2/query`;
   const response = await fetch(url, {
     method: 'POST',
@@ -505,11 +530,13 @@ export const queryTaskResultV2 = async (apiKey: string, taskId: string): Promise
       ...buildAuthHeaders(apiKey),
     },
     body: JSON.stringify({ taskId }),
+    signal:AbortSignal.timeout(12000),
   });
 
   const json = await handleResponse<any>(response);
   const body = isWrappedApiResponse(json) ? json.data : json;
 
+  if (['1004','807'].includes(String(body?.errorCode))) throw createRunningHubError(body.errorCode,body.errorMessage||'平台任务不存在或已过期');
   if (!body || !body.taskId) {
     throw new Error('Invalid v2 query response');
   }
@@ -525,8 +552,8 @@ export const queryTaskResultV2 = async (apiKey: string, taskId: string): Promise
   };
 };
 
-export const queryTaskOutputs = async (apiKey: string, taskId: string): Promise<QueryTaskResponse> => {
-  const region = await resolveRunningHubRegion(apiKey);
+export const queryTaskOutputs = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResponse> => {
+  const region = resolvedRegion || await resolveRunningHubRegion(apiKey);
   const url = `${getRunningHubHost(region)}/task/openapi/outputs`;
 
   const response = await fetch(url, {
@@ -536,6 +563,7 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string): Promise<
       ...buildAuthHeaders(apiKey),
     },
     body: JSON.stringify({ apiKey, taskId }),
+    signal:AbortSignal.timeout(12000),
   });
 
   if (!response.ok) {
@@ -544,6 +572,7 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string): Promise<
 
   const json = await response.json();
   const code = json.code;
+  if(code===807)throw createRunningHubError(code,json.msg||'平台任务不存在或已过期');
   let responseData: TaskOutput[] | { failedReason: any } = [];
   let usage: QueryTaskResponse['usage'];
 
@@ -553,8 +582,8 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string): Promise<
     usage = {
       thirdPartyConsumeMoney: firstItem.thirdPartyConsumeMoney || '0',
       consumeMoney: firstItem.consumeMoney || '0',
-      consumeCoins: firstItem.consumeCoins || '0',
-      taskCostTime: firstItem.taskCostTime || '0',
+      consumeCoins: firstItem.consumeCoins == null || firstItem.consumeCoins === '' ? '' : String(firstItem.consumeCoins),
+      taskCostTime: firstItem.taskCostTime == null ? '' : String(firstItem.taskCostTime),
     };
   } else if (code === 805 && json.data?.failedReason) {
     responseData = { failedReason: json.data.failedReason };
@@ -571,13 +600,13 @@ export const queryTaskOutputs = async (apiKey: string, taskId: string): Promise<
   };
 };
 
-export const queryTaskResult = async (apiKey: string, taskId: string): Promise<QueryTaskResultV2> => {
+export const queryTaskResult = async (apiKey: string, taskId: string, resolvedRegion?: RunningHubRegion): Promise<QueryTaskResultV2> => {
   try {
-    const v2Result = await queryTaskResultV2(apiKey, taskId);
+    const v2Result = await queryTaskResultV2(apiKey, taskId, resolvedRegion);
 
     if (v2Result.status === 'SUCCESS' || v2Result.status === 'FAILED') {
       try {
-        const legacyResult = await queryTaskOutputs(apiKey, taskId);
+        const legacyResult = await queryTaskOutputs(apiKey, taskId, resolvedRegion);
         return {
           ...v2Result,
           results: v2Result.results.length > 0 ? v2Result.results : normalizeTaskOutputs(legacyResult.data as any[]),
@@ -591,7 +620,7 @@ export const queryTaskResult = async (apiKey: string, taskId: string): Promise<Q
 
     return v2Result;
   } catch {
-    const legacyResult = await queryTaskOutputs(apiKey, taskId);
+    const legacyResult = await queryTaskOutputs(apiKey, taskId, resolvedRegion);
     return {
       taskId,
       status: legacyResult.status || 'FAILED',
@@ -618,6 +647,7 @@ export const getAccountInfo = async (apiKey: string, resolvedRegion?: RunningHub
 
   const response = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(10000),
     headers: {
       'Content-Type': 'application/json',
       ...buildAuthHeaders(apiKey),
@@ -659,8 +689,8 @@ export const getApiQueueStatus = async (apiKey: string, resolvedRegion?: Running
   return {
     apiKeyType: json.data.apiKeyType || '',
     concurrentLimit: Math.max(1, Math.floor(Number(json.data.concurrentLimit) || 1)),
-    runningCount: String(json.data.runningCount ?? '0'),
-    queuedCount: String(json.data.queuedCount ?? '0'),
+    runningCount: String(json.data.runningCount ?? ''),
+    queuedCount: String(json.data.queuedCount ?? ''),
     totalCurrentTasks: String(json.data.totalCurrentTasks ?? ((Number(json.data.runningCount) || 0) + (Number(json.data.queuedCount) || 0))),
   };
 };
@@ -886,6 +916,7 @@ export const getOfficialAppList = async (
   size: number = 50,
   sort: string = 'RECOMMEND',
   search?: string,
+  carefullyChosen: boolean = false,
 ): Promise<{
   records: AppListItem[];
   total: number;
@@ -894,7 +925,7 @@ export const getOfficialAppList = async (
   const body: JsonRecord = {
     current: page,
     size,
-    carefullyChosen: true,
+    ...(carefullyChosen ? { carefullyChosen: true } : {}),
     sort,
   };
 

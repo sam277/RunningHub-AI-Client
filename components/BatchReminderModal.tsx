@@ -1,3 +1,4 @@
+import { settingsStorage } from '../services/localPersistence';
 import React, { useState, useEffect } from 'react';
 import { X, Volume2, Play, Check, Bell, BellOff } from 'lucide-react';
 
@@ -26,8 +27,8 @@ const BatchReminderModal: React.FC<BatchReminderModalProps> = ({
     // Load settings when modal opens
     useEffect(() => {
         if (isOpen) {
-            const savedEnabled = localStorage.getItem(STORAGE_KEY_REMINDER_ENABLED);
-            const savedAudio = localStorage.getItem(STORAGE_KEY_REMINDER_AUDIO);
+            const savedEnabled = settingsStorage.getItem(STORAGE_KEY_REMINDER_ENABLED);
+            const savedAudio = settingsStorage.getItem(STORAGE_KEY_REMINDER_AUDIO);
             
             setEnabled(savedEnabled === 'true');
             if (savedAudio) {
@@ -39,8 +40,8 @@ const BatchReminderModal: React.FC<BatchReminderModalProps> = ({
     if (!isOpen) return null;
 
     const handleSave = () => {
-        localStorage.setItem(STORAGE_KEY_REMINDER_ENABLED, String(enabled));
-        localStorage.setItem(STORAGE_KEY_REMINDER_AUDIO, selectedAudio);
+        settingsStorage.setItem(STORAGE_KEY_REMINDER_ENABLED, String(enabled));
+        settingsStorage.setItem(STORAGE_KEY_REMINDER_AUDIO, selectedAudio);
         onClose();
     };
 

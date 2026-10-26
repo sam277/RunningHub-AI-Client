@@ -3,7 +3,7 @@ export interface NodeInfo {
   nodeName: string;
   fieldName: string;
   fieldValue: string;
-  fieldType: 'IMAGE' | 'AUDIO' | 'VIDEO' | 'STRING' | 'INT' | 'FLOAT' | 'LIST' | 'SWITCH' | 'BOOLEAN';
+  fieldType: 'IMAGE' | 'AUDIO' | 'VIDEO' | 'FILE' | 'STRING' | 'INT' | 'FLOAT' | 'LIST' | 'SWITCH' | 'BOOLEAN';
   description?: string;
   descriptionEn?: string;
   fieldData?: string | Record<string, any> | any[];
@@ -31,7 +31,7 @@ export interface UploadData {
   size?: string;
 }
 
-export type TaskRuntimeStatus = 'QUEUED' | 'RUNNING' | 'FAILED' | 'SUCCESS';
+export type TaskRuntimeStatus = 'QUEUED' | 'RUNNING' | 'FAILED' | 'SUCCESS' | 'CANCELLED';
 
 export interface SubmitTaskData {
   taskId: string;
@@ -128,6 +128,8 @@ export interface WorkflowRunOptions {
 export interface ApiKeyEntry {
   id: string;
   apiKey: string;
+  note?: string;
+  enabled?: boolean;
   concurrency?: number;
   accountInfo?: AccountInfo | null;
   apiInfo?: ApiInfo | null;
@@ -183,7 +185,7 @@ export interface AutoSaveConfig {
   directoryPath?: string | null;
 }
 
-export type HomeDefaultTab = 'official' | 'support';
+export type HomeDefaultTab = 'official' | 'favorites';
 
 export interface WebAppInfo {
   webappName: string;

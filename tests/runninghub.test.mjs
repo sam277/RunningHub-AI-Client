@@ -24,6 +24,17 @@ after(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 beforeEach(() => { globalThis.fetch = async () => { throw new Error('Unexpected network request'); }; });
+test('unreported consumption stays unknown while a genuine zero remains reported',()=>{
+  assert.equal(api.parseTaskUsage(undefined),undefined);
+  assert.equal(api.parseTaskUsage({consumeCoins:''}).coinsReported,false);
+  assert.equal(api.parseTaskUsage({consumeCoins:'not-a-number'}).coinsReported,false);
+  assert.equal(api.parseTaskUsage({consumeCoins:'0'}).coinsReported,true);
+  assert.equal(api.parseTaskUsage({consumeCoins:'12.5'}).coins,12.5);
+  assert.equal(api.parseTaskUsage({taskCostTime:''}).taskTimeReported,false);
+  assert.equal(api.parseTaskUsage({taskCostTime:'0'}).taskTimeReported,true);
+  assert.equal(api.parseTaskUsage({taskCostTime:'Infinity'}).taskTime,0);
+  assert.equal(api.parseTaskUsage({taskCostTime:'-1'}).taskTimeReported,false);
+});
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const queue = (limit, running = 0, queued = 0) => json({ code: 0, data: { concurrentLimit: limit, runningCount: String(running), queuedCount: String(queued), totalCurrentTasks: String(running + queued) } });
 
@@ -182,4 +193,62 @@ test('API node loading normalizes COMBO type without losing field data', async (
   const result = await api.getNodeList('a', '123');
   assert.equal(result.nodes[0].fieldType, 'LIST');
   assert.deepEqual(api.parseListOptions(result.nodes[0]).map(item => item.index), ['match', 'max']);
+});
+
+test('task input provenance includes only effective files; row overrides shared sources', () => {
+  const nodes = [{ nodeId: '1', fieldName: 'image', fieldType: 'IMAGE', fieldValue: '', _taskId: 'row-a' }, { nodeId: '2', fieldName: 'audio', fieldType: 'AUDIO', fieldValue: '', _taskId: 'row-a' }];
+  const shared = new File(['base'], 'base.png');
+  const override = new File(['variant'], 'variant.png');
+  const sound = new File(['sound'], 'sound.wav');
+  const selected = api.selectPendingFilesForTask(nodes, {
+    'single|1|image': shared, 'row-a|1|image': override,
+    'row-b|1|image': new File(['other'], 'other.png'), 'single|2|audio': sound,
+  });
+  assert.deepEqual(Object.keys(selected).sort(), ['row-a|1|image', 'single|2|audio']);
+  assert.equal(selected['row-a|1|image'], override);
+});
+
+test('cancel uses original regional host, bearer and task ID and rejects platform failure',async()=>{
+  globalThis.fetch=async(url,init)=>{
+    assert.equal(url,'https://www.runninghub.ai/task/openapi/cancel');
+    assert.equal(init.headers.Authorization,'Bearer original-key');
+    assert.deepEqual(JSON.parse(init.body),{apiKey:'original-key',taskId:'accepted-task'});
+    return json({code:0,msg:'success',data:null});
+  };
+  await api.cancelTask('original-key','accepted-task','global');
+  globalThis.fetch=async()=>json({code:807,msg:'task not found',data:null});
+  await assert.rejects(api.cancelTask('original-key','accepted-task','global'),/task not found/);
+  globalThis.fetch=async()=>json({},503);
+  await assert.rejects(api.cancelTask('original-key','accepted-task','global'),/503/);
+});
+test('all official cancelled status spellings are terminal and executor preserves remote cancellation',async()=>{
+  for(const status of ['CANCEL','CANCELED','CANCELLED']){
+    globalThis.fetch=async()=>json({taskId:'accepted-task',status,results:[]});
+    assert.equal((await api.queryTaskResultV2('original-key','accepted-task','global')).status,'CANCELLED');
+  }
+  globalThis.fetch=async url=>url.endsWith('/ai-app/run')?json({code:0,data:{taskId:'accepted-task',taskStatus:'RUNNING'}}):json({taskId:'accepted-task',status:'CANCEL',results:[]});
+  await assert.rejects(api.executeWorkflowTask({apiKey:'original-key',webappId:'123',taskNodes:[],autoSaveEnabled:false}),error=>error instanceof api.RemoteTaskCancelledError&&error.taskId==='accepted-task'&&error.taskSubmitted);
+});
+
+test('aborted media upload never falls back to another endpoint',async()=>{
+  const controller=new AbortController();let calls=0;
+  globalThis.fetch=async(_url,init)=>{calls++;assert.equal(init.signal,controller.signal);controller.abort();throw new TypeError('Failed to fetch');};
+  await assert.rejects(api.uploadFile('original-key',new File(['image'],'ref.png',{type:'image/png'}),controller.signal),/Failed to fetch/);
+  assert.equal(calls,1);
+});
+
+test('missing or invalid task status is not silently treated as queued',async()=>{
+ globalThis.fetch=async()=>json({taskId:'removed',status:'',errorCode:'1004',errorMessage:'Task not found'});
+ await assert.rejects(api.queryTaskResultV2('a','removed','global'),api.isTaskNotFoundError);
+ globalThis.fetch=async()=>json({code:807,msg:'APIKEY_TASK_NOT_FOUND',data:null});
+ await assert.rejects(api.queryTaskOutputs('a','removed','global'),api.isTaskNotFoundError);
+ globalThis.fetch=async()=>json({taskId:'removed',status:'',errorCode:'',results:null});
+ await assert.rejects(api.queryTaskResultV2('a','removed','global'),/无法识别/);
+});
+
+test('generic application fields preserve file uploads and normalize numeric aliases',async()=>{
+ globalThis.fetch=async()=>json({code:0,data:{nodeInfoList:['FILE','INTEGER','DOUBLE','TEXT',' future_type '].map((fieldType,i)=>({nodeId:i,fieldName:'p'+i,fieldType,fieldValue:'original',required:i===0}))}});
+ const result=await api.getNodeList('a','123');
+ assert.deepEqual(result.nodes.map(n=>n.fieldType),['FILE','INT','FLOAT','STRING','STRING']);
+ assert.equal(result.nodes[0].required,true);assert.ok(result.nodes.every(n=>n.fieldValue==='original'));
 });

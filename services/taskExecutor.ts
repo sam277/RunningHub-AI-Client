@@ -1,6 +1,6 @@
 import { saveMultipleFiles } from './autoSaveService';
 import { connectTaskProgress, TaskProgressSnapshot } from './taskProgress';
-import { queryTaskResult, submitTask, uploadFile } from './api';
+import { queryTaskResult, isTaskNotFoundError, submitTask, uploadFile } from './api';
 import { InstanceType, NodeInfo, PendingFilesMap, PromptTips, TaskOutput, WorkflowRunOptions } from '../types';
 
 const DEFAULT_POLL_INTERVAL_MS = 3500;
@@ -9,33 +9,45 @@ const REALTIME_POLL_INTERVAL_MS = 5000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export class TaskCancelledError extends Error {
-  constructor(message = '任务已停止追踪') {
+  constructor(message = '任务已取消') {
     super(message);
     this.name = 'TaskCancelledError';
   }
 }
 
+export class RemoteTaskCancelledError extends TaskCancelledError {
+  readonly taskSubmitted = true;
+  constructor(readonly taskId:string) { super('平台已确认取消任务'); this.name='RemoteTaskCancelledError'; }
+}
+
 export class TaskExecutionError extends Error {
   readonly taskSubmitted = true;
-  constructor(readonly taskId: string, cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  constructor(readonly taskId: string, cause: unknown, readonly phase: 'query' | 'generation' = 'query') {
+    super(`平台任务 ${taskId}：${cause instanceof Error ? cause.message : String(cause)}`, { cause });
     this.name = 'TaskExecutionError';
   }
 }
 
 export interface TaskUsageStats {
+  coinsReported?: boolean;
   coins: number;
   thirdParty: number;
   taskTime: number;
+  taskTimeReported?: boolean;
 }
 
 export interface ExecuteTaskCallbacks {
+  onQueryMissing?:()=>Promise<boolean>;
+  beforeSubmit?: (nodes: NodeInfo[]) => Promise<void>;
+  onAccepted?: (taskId: string, nodes: NodeInfo[]) => Promise<void>;
+  onGenerationResult?: (outputs: TaskOutput[]) => Promise<void>;
   onLog?: (message: string) => void;
   onProgress?: (snapshot: TaskProgressSnapshot) => void;
-  onStatusChange?: (status: 'SUBMITTING' | 'QUEUED' | 'RUNNING') => void;
+  onStatusChange?: (status: 'SUBMITTING' | 'QUEUED' | 'RUNNING') => void | Promise<void>;
 }
 
 export interface ExecuteTaskControl {
+  uploadSignal?:AbortSignal;
   isCancelled?: () => boolean;
   registerConnection?: (connection: { close: () => void } | null) => () => void;
   pollOffsetMs?: number;
@@ -187,6 +199,19 @@ const saveOutputs = async (
   }
 };
 
+export const selectPendingFilesForTask = (nodes: NodeInfo[], files: PendingFilesMap = {}, index = 0): PendingFilesMap => {
+  const taskId = nodes[0]?._taskId || `task-${index}`;
+  const selected = new Map<string, [string, File]>();
+  for (const scope of ['single', taskId, `task-${index}`]) {
+    Object.entries(files).forEach(([key, file]) => {
+      const [owner, nodeId, fieldName] = key.split('|');
+      if (owner === scope && nodes.some(node => String(node.nodeId) === nodeId && node.fieldName === fieldName)) selected.set(nodeId+'|'+fieldName, [key, file]);
+    });
+  }
+  for (const [,file] of selected.values()) if (!(file instanceof File)) throw new Error('本地素材原件不可用，请重新选择文件后再运行。');
+  return Object.fromEntries(selected.values());
+};
+
 const uploadPendingFilesForTask = async (
   apiKey: string,
   taskNodes: NodeInfo[],
@@ -194,20 +219,16 @@ const uploadPendingFilesForTask = async (
   taskIndex = 0,
   onLog?: (message: string) => void,
   logPrefix = '',
+  control?:ExecuteTaskControl,
 ): Promise<NodeInfo[]> => {
   if (!pendingFiles || Object.keys(pendingFiles).length === 0) {
     return taskNodes.map(node => ({ ...node }));
   }
 
-  const currentTaskId = taskNodes[0]?._taskId || `task-${taskIndex}`;
-  const filesToUpload: { nodeId: string; fieldName: string; file: File }[] = [];
-
-  for (const [key, file] of Object.entries(pendingFiles) as [string, File][]) {
-    const [taskId, nodeId, fieldName] = key.split('|');
-    if (taskId === currentTaskId || taskId === `task-${taskIndex}`) {
-      filesToUpload.push({ nodeId, fieldName, file });
-    }
-  }
+  const filesToUpload = Object.entries(selectPendingFilesForTask(taskNodes, pendingFiles, taskIndex)).map(([key, file]) => {
+    const [,nodeId,fieldName] = key.split('|');
+    return { nodeId, fieldName, file };
+  });
 
   if (filesToUpload.length === 0) {
     return taskNodes.map(node => ({ ...node }));
@@ -217,7 +238,11 @@ const uploadPendingFilesForTask = async (
   const clonedNodes = taskNodes.map(node => ({ ...node }));
 
   for (const { nodeId, fieldName, file } of filesToUpload) {
-    const result = await uploadFile(apiKey, file);
+    ensureNotCancelled(control);
+    let result;
+    try{result=await uploadFile(apiKey,file,control?.uploadSignal);}
+    catch(error){if(control?.uploadSignal?.aborted||control?.isCancelled?.())throw new TaskCancelledError();throw error;}
+    ensureNotCancelled(control);
     const targetIndex = clonedNodes.findIndex(node => String(node.nodeId) === String(nodeId) && (node.fieldName || '') === fieldName);
     if (targetIndex !== -1) {
       clonedNodes[targetIndex].fieldValue = result.fileName;
@@ -244,13 +269,15 @@ export const executeWorkflowTask = async ({
   ensureNotCancelled(control);
   const logPrefix = taskLabel ? `${taskLabel}: ` : '';
 
-  const nodesToSubmit = await uploadPendingFilesForTask(apiKey, taskNodes, pendingFiles, taskIndex, callbacks?.onLog, logPrefix);
+  const nodesToSubmit = await uploadPendingFilesForTask(apiKey, taskNodes, pendingFiles, taskIndex, callbacks?.onLog, logPrefix, control);
   ensureNotCancelled(control);
 
-  callbacks?.onStatusChange?.('SUBMITTING');
+  await callbacks?.onStatusChange?.('SUBMITTING');
   callbacks?.onLog?.(`${logPrefix}提交任务`);
 
+  await callbacks?.beforeSubmit?.(nodesToSubmit);
   const submitResult = await submitTask(apiKey, webappId, nodesToSubmit, instanceType, runOptions);
+  await callbacks?.onAccepted?.(submitResult.taskId, nodesToSubmit);
   const submitPromptTips = parsePromptTips(submitResult.promptTips);
   if (submitPromptTips?.node_errors && Object.keys(submitPromptTips.node_errors).length > 0) {
     const parsed = parseNodeErrors(submitPromptTips.node_errors);
@@ -258,7 +285,7 @@ export const executeWorkflowTask = async ({
   }
 
   const initialStatus = submitResult.taskStatus === 'RUNNING' ? 'RUNNING' : 'QUEUED';
-  callbacks?.onStatusChange?.(initialStatus);
+  await callbacks?.onStatusChange?.(initialStatus);
   callbacks?.onLog?.(`${logPrefix}任务已提交 ${submitResult.taskId}`);
 
   let stopProgressMonitor = () => {};
@@ -271,22 +298,20 @@ export const executeWorkflowTask = async ({
 
   const pollIntervalMs = (submitResult.netWssUrl ? REALTIME_POLL_INTERVAL_MS : DEFAULT_POLL_INTERVAL_MS) + (control?.pollOffsetMs || 0);
   let lastStatus = initialStatus;
+  let failurePhase: 'query' | 'generation' = 'query';
 
   try {
     while (true) {
       ensureNotCancelled(control);
-      const result = await queryTaskResult(apiKey, submitResult.taskId);
+      let result;
+      try{result=await queryTaskResult(apiKey,submitResult.taskId);}
+      catch(error){if(isTaskNotFoundError(error)&&await callbacks?.onQueryMissing?.())throw new RemoteTaskCancelledError(submitResult.taskId);throw error;}
       ensureNotCancelled(control);
 
       if (result.status === 'SUCCESS') {
-        const usage = result.usage
-          ? {
-              coins: parseFloat(result.usage.consumeCoins) || 0,
-              thirdParty: parseFloat(result.usage.thirdPartyConsumeMoney) || 0,
-              taskTime: parseInt(result.usage.taskCostTime, 10) || 0,
-            }
-          : undefined;
+        const usage = parseTaskUsage(result.usage);
 
+        await callbacks?.onGenerationResult?.(result.results);
         callbacks?.onLog?.(`${logPrefix}任务完成`);
         const savedCount = await saveOutputs(result.results, autoSaveEnabled, taskIndex, batchTaskName, callbacks?.onLog, logPrefix);
 
@@ -298,7 +323,10 @@ export const executeWorkflowTask = async ({
         };
       }
 
+      if (result.status === 'CANCELLED') throw new RemoteTaskCancelledError(submitResult.taskId);
+
       if (result.status === 'FAILED') {
+        failurePhase = 'generation';
         throw new Error(extractTaskError({
           errorCode: result.errorCode,
           errorMessage: result.errorMessage,
@@ -308,7 +336,7 @@ export const executeWorkflowTask = async ({
       }
 
       const nextStatus = result.status === 'RUNNING' ? 'RUNNING' : 'QUEUED';
-      callbacks?.onStatusChange?.(nextStatus);
+      await callbacks?.onStatusChange?.(nextStatus);
       if (nextStatus !== lastStatus) {
         callbacks?.onLog?.(`${logPrefix}${nextStatus === 'RUNNING' ? '开始执行' : '进入排队'}`);
         lastStatus = nextStatus;
@@ -319,8 +347,15 @@ export const executeWorkflowTask = async ({
   } catch (error) {
     if (error instanceof TaskCancelledError) throw error;
     // A result-query or workflow error must never requeue a task already accepted by the server.
-    throw new TaskExecutionError(submitResult.taskId, error);
+    throw new TaskExecutionError(submitResult.taskId, error, failurePhase);
   } finally {
     stopProgressMonitor();
   }
 };
+
+export function parseTaskUsage(usage?: {consumeCoins?:string;thirdPartyConsumeMoney?:string;taskCostTime?:string}): TaskUsageStats | undefined {
+  if(!usage)return undefined;
+  const reported=typeof usage.consumeCoins==='string'&&usage.consumeCoins.trim()!==''&&Number.isFinite(Number(usage.consumeCoins))&&Number(usage.consumeCoins)>=0;
+  const timeReported=typeof usage.taskCostTime==='string'&&usage.taskCostTime.trim()!==''&&Number.isFinite(Number(usage.taskCostTime))&&Number(usage.taskCostTime)>=0;
+  return {coins:reported?Number(usage.consumeCoins):0,coinsReported:reported,thirdParty:parseFloat(usage.thirdPartyConsumeMoney||'')||0,taskTime:timeReported?Number(usage.taskCostTime):0,taskTimeReported:timeReported};
+}

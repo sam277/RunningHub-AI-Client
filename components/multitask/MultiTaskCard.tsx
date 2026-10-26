@@ -1,3 +1,6 @@
+import RunLog, { RunLogEntry } from './RunLog';
+import { archiveOutputUrl } from '../../services/production';
+import { localSession } from '../../services/localPersistence';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
@@ -37,7 +40,7 @@ export interface MultiTaskCardRunState {
   progressText: string;
   currentTaskId: string | null;
   taskIds: string[];
-  logs: string[];
+  logs: RunLogEntry[];
   outputs: TaskOutput[];
   error: string | null;
   failedBatchIndices: Set<number>;
@@ -46,7 +49,10 @@ export interface MultiTaskCardRunState {
 
 export interface MultiTaskCardData {
   id: string;
+  name?: string;
   webappId: string;
+  loadedAppId?: string;
+  sourceAttemptId?: string;
   webAppInfo: WebAppInfo | null;
   nodes: NodeInfo[];
   isConnected: boolean;
@@ -62,9 +68,17 @@ export interface MultiTaskCardData {
 }
 
 interface MultiTaskCardProps {
+  ordinal?: number;
   card: MultiTaskCardData;
   apiKeys: string[];
   editorRef: React.Ref<StepEditorRef>;
+  onSnapshotChange?: () => void;
+  onNameChange: (name: string) => void;
+  onFavorite: () => void;
+  onSaveTemplate: () => void;
+  onVariants: () => void;
+  detailView?: boolean;
+  appName?:string;executionStatus?:string;executionState?:string;hasResult?:boolean;onPreview?:()=>void;
   isBusy: boolean;
   onRunOptionsChange: (cardId: string, options: WorkflowRunOptions) => void;
   onWebappIdChange: (cardId: string, value: string) => void;
@@ -185,6 +199,7 @@ const renderOutputThumb = (output: TaskOutput) => {
 
 const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   card,
+  ordinal,
   apiKeys,
   editorRef,
   isBusy,
@@ -196,6 +211,13 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   onRun,
   onCancel,
   onInstanceTypeChange,
+  onSnapshotChange,
+  detailView,
+  appName,executionStatus,executionState,hasResult,onPreview,
+  onNameChange,
+  onFavorite,
+  onSaveTemplate,
+  onVariants,
 }) => {
   const [inputValue, setInputValue] = useState(card.webappId);
   const [activeOutputIndex, setActiveOutputIndex] = useState(0);
@@ -230,6 +252,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
     if (!url) return;
 
     try {
+      if (localSession() && await archiveOutputUrl(url)) return;
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error('download failed');
@@ -256,16 +279,16 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
   };
 
   return (
-    <div className="relative flex h-[calc(100vh-120px)] min-h-[600px] max-h-[900px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-[#161920]">
-      <div className="border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/30">
+    <div className={detailView ? 'production-task bg-white dark:bg-[#161920]' : 'relative flex min-h-[600px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#161920] h-[calc(100vh-180px)]'}>
+      <div className="production-task-header xl:col-span-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/30">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="truncate text-base font-semibold text-slate-800 dark:text-white">
-                {card.webAppInfo?.webappName || card.webappId || '\u65b0\u4efb\u52a1\u5361\u7247'}
-              </h3>
-              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${statusMeta.className}`}>
-                {statusMeta.label}
+              <label className="flex min-w-0 items-center gap-2">{ordinal&&<span className="task-ordinal" aria-label="当前任务顺序">{ordinal}.</span>}<span className="shrink-0 text-xs text-slate-500">任务名称</span><input aria-label="任务名称" value={card.name || ''} placeholder="自定义任务名称，便于区分相同应用"
+          disabled={isBusy} onChange={event => onNameChange(event.target.value)}
+          className="min-w-0 w-full max-w-xl rounded border border-slate-300 bg-transparent px-2 py-1 text-sm dark:border-slate-600" /></label>
+              <span data-status={executionState} className={`task-state rounded-full px-2 py-0.5 text-[11px] font-medium ${statusMeta.className}`}>
+                {executionStatus||statusMeta.label}
               </span>
             </div>
           </div>
@@ -289,7 +312,14 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
           </div>
         </div>
 
-        <div className="mt-3 flex gap-2">
+        <div className="task-app-line"><strong title={card.webAppInfo?.webappName||card.webappId}>{appName||card.webAppInfo?.webappName||card.webappId||"尚未加载应用"}</strong>{hasResult&&<button onClick={onPreview}>结果预览</button>}<details className="task-more"><summary>更多</summary><div>
+          <button disabled={!card.webappId} onClick={onFavorite}>收藏应用</button>
+          <button disabled={!card.isConnected} onClick={onSaveTemplate}>保存为模板</button>
+          <button disabled={!card.isConnected || isBusy} onClick={onVariants}>生成提示词变体</button>
+
+        </div></details></div>
+
+        <details className="task-load-app mt-2 text-xs" open={!card.isConnected}><summary>应用 ID / 加载</summary><div className="mt-2 flex gap-2">
           <input
             type="text"
             value={inputValue}
@@ -315,9 +345,10 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
             {card.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             {'\u52a0\u8f7d'}
           </button>
-        </div>
+        </div></details>
 
-        <details className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+        {!card.isConnected && card.nodes.length > 0 && <p className="mt-2 text-xs text-amber-600">已保留原配置，加载成功后才切换应用。输回原应用 ID 可继续使用。</p>}
+        <details className="task-run-options mt-3 text-xs text-slate-500 dark:text-slate-400">
           <summary className="cursor-pointer">应用运行选项</summary>
           <div className="mt-2 grid gap-2">
             <label className="grid gap-1">
@@ -332,20 +363,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700 dark:border-slate-700 dark:bg-[#0F1115] dark:text-slate-200"
               />
             </label>
-            <label className="grid gap-1">
-              <span>实例保留时长（秒，仅企业共享）</span>
-              <input
-                type="number"
-                min={10}
-                max={180}
-                step={1}
-                disabled={isBusy}
-                value={card.runOptions?.retainSeconds ?? ''}
-                onChange={event => onRunOptionsChange(card.id, { ...card.runOptions, retainSeconds: event.target.value === '' ? undefined : Number(event.target.value) })}
-                placeholder="10–180，留空使用默认值"
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700 dark:border-slate-700 dark:bg-[#0F1115] dark:text-slate-200"
-              />
-            </label>
+
           </div>
         </details>
 
@@ -359,6 +377,11 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
 
       <div className="relative flex-1 min-h-0">
         <StepEditor
+          productionLayout={detailView}
+          cancelPending={executionState==='cancelling'}
+          applicationId={card.loadedAppId||card.webappId}
+          runLabel={['success','failed','cancelled'].includes(card.run.status) ? '再生成一次' : '运行'}
+          onSnapshotChange={onSnapshotChange}
           key={card.editorRevision}
           initialPendingFiles={card.initialPendingFiles}
           ref={editorRef}
@@ -378,7 +401,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
         />
       </div>
 
-      <div className="border-t border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-[#161920]">
+      <div className={detailView ? "hidden" : "min-h-0 overflow-y-auto border-t border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-[#161920]"}>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             {card.run.status === 'success' ? (
@@ -566,15 +589,7 @@ const MultiTaskCard: React.FC<MultiTaskCardProps> = ({
             {'\u8fd0\u884c\u65e5\u5fd7'}
           </div>
           <div className="max-h-40 overflow-y-auto rounded-xl bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-300">
-            {displayLogs.length === 0 ? (
-              <div className="text-slate-500">{'\u6682\u65e0\u65e5\u5fd7'}</div>
-            ) : (
-              displayLogs.map((log, index) => (
-                <div key={`${card.id}-log-${index}`} className="mb-1 break-all">
-                  {log}
-                </div>
-              ))
-            )}
+            <RunLog entries={displayLogs}/>
           </div>
         </div>
       </div>

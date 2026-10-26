@@ -1,3 +1,4 @@
+import { settingsStorage } from '../services/localPersistence';
 import React, { useEffect, useState } from 'react';
 import { LayoutTemplate, Lock, Settings, SlidersHorizontal, Volume2 } from 'lucide-react';
 import { AutoSaveConfig, HomeDefaultTab } from '../types';
@@ -24,7 +25,7 @@ const STARTUP_VIEW_LABELS: Record<StartupView, string> = {
 
 const HOME_TAB_LABELS: Record<HomeDefaultTab, string> = {
   official: '官方应用商城',
-  support: '交流与支持',
+  favorites: '我的收藏',
 };
 
 const ToolsView: React.FC<ToolsViewProps> = ({
@@ -41,7 +42,7 @@ const ToolsView: React.FC<ToolsViewProps> = ({
   const [reminderEnabled, setReminderEnabled] = useState(false);
 
   useEffect(() => {
-    const enabled = localStorage.getItem('rh_batch_reminder_enabled') === 'true';
+    const enabled = settingsStorage.getItem('rh_batch_reminder_enabled') === 'true';
     setReminderEnabled(enabled);
   }, [showBatchReminderModal]);
 
@@ -74,7 +75,7 @@ const ToolsView: React.FC<ToolsViewProps> = ({
               </h3>
             </div>
             <p className="line-clamp-2 text-xs text-slate-500 dark:text-slate-400">
-              管理自动保存、启动页和首页默认标签，让软件打开后直接进入标准模型 API、多任务或首页。
+              管理输出自动保存、启动页和首页收藏入口。
             </p>
             <div className="mt-3 space-y-1 text-[11px] text-slate-400 dark:text-slate-500">
               <div className="flex items-center gap-2">
